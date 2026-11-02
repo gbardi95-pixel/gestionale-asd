@@ -1,5 +1,6 @@
 import base64
 import datetime
+import difflib
 import hmac
 import io
 import json
@@ -12,7 +13,7 @@ import warnings
 import pandas as pd
 import streamlit as st
 from contextlib import contextmanager
-from modules import backup, distinte, esercizio, estratti, f24, fattura_xml, lavoro_sportivo, libro_soci, preventivo, quote, rendiconto_pdf, ricevuta_pdf, scadenze, solleciti, squadra, tesseramento, utenti
+from modules import backup, disciplina, distinte, esercizio, estratti, f24, fattura_xml, lavoro_sportivo, libro_soci, preventivo, quote, rendiconto_pdf, ricevuta_pdf, scadenze, solleciti, squadra, tesseramento, utenti
 from modules import cap as cap_comuni
 from modules.db import ERRORE_ESERCIZIO_CHIUSO, PIANO_DEI_CONTI_ASD, _turso_credentials, connessione_replica, get_connection, init_db, usa_turso, versione_schema_db
 
@@ -21,7 +22,7 @@ from modules.db import ERRORE_ESERCIZIO_CHIUSO, PIANO_DEI_CONTI_ASD, _turso_cred
 # ---------------------------------------------------------
 # Incrementare a ogni modifica dello schema del DB: forza init_db() (e le migrazioni)
 # anche quando Streamlit Cloud aggiorna il codice senza riavviare il server.
-VERSIONE_SCHEMA_DB = 18
+VERSIONE_SCHEMA_DB = 19
 
 @st.cache_resource(show_spinner="Avvio dell'app…")
 def _setup_database(versione_schema):
@@ -1981,10 +1982,14 @@ def pagina_distinte():
             st.warning("Tolti dalla distinta perché alla data della gara non possono giocare: " + ", ".join(
                 f"{pers[pid]['denominazione']} ({esclusi[pid]})" if pid in pers else str((sal_gioc.get(pid) or {}).get("nominativo", pid))
                 for pid in non_piu_ammessi))
+        situazioni_dist = situazione_disciplinare(set(ammessi), conv_sel.categoria if conv_sel is not None else None)
         sel_gioc = st.multiselect("Giocatori convocati (in distinta compaiono in ordine alfabetico)", ammessi, default=def_gioc,
-                                  format_func=lambda pid: pers[pid]["denominazione"], key=k + "gioc",
+                                  format_func=lambda pid: pers[pid]["denominazione"] + segno_disciplina(situazioni_dist.get(pid)), key=k + "gioc",
                                   placeholder="Scrivi il nome per cercare o scegli i giocatori")
         sel_gioc = sorted(sel_gioc, key=lambda pid: pers[pid]["denominazione"].casefold())
+        for pid in sel_gioc:
+            if situazioni_dist.get(pid, ("",))[0] == "SQUALIFICATO":
+                st.warning(f"⛔ {pers[pid]['denominazione']}: {situazioni_dist[pid][1]}. Controlla sul comunicato prima di metterlo in distinta.")
         with st.expander(f"🚫 Non selezionabili alla data della gara ({sum(1 for pid, m in esclusi.items() if m and pers[pid].get('gioca'))})"):
             st.caption("Solo chi gioca, ha il numero di tessera e un certificato medico valido il giorno della gara può essere messo in distinta.")
             for pid, m in esclusi.items():
@@ -4228,6 +4233,255 @@ def correggi_spesa(df_sp, categorie):
                 st.error(f"Errore nell'eliminazione: {ex_d}")
 
 
+def situazione_disciplinare(ids, categoria):
+    """{anagrafica_id: (stato, testo)} per chi è squalificato o diffidato, dai comunicati importati."""
+    if not ids:
+        return {}
+    df = leggi_df(
+        "SELECT p.anagrafica_id, p.tipo, p.giornate, p.fino_al, c.numero AS numero_comunicato, c.data AS data_comunicato "
+        "FROM provvedimenti_disciplinari p JOIN comunicati_disciplina c ON c.id = p.comunicato_id "
+        "WHERE p.anagrafica_id IS NOT NULL AND p.tipo IN ('DIFFIDA', 'SQUALIFICA_SOMMA', 'SQUALIFICA_GIORNATE', 'SQUALIFICA_TEMPO')")
+    if df.empty:
+        return {}
+    ultimo = leggi_df("SELECT data, numero FROM comunicati_disciplina ORDER BY data DESC, numero DESC LIMIT 1").iloc[0]
+    oggi = datetime.date.today().isoformat()
+    date_partite = leggi_df("SELECT data FROM eventi_squadra WHERE tipo = 'PARTITA' AND (? IS NULL OR categoria = ?) AND data <= ?", [categoria, categoria, oggi])["data"].tolist()
+    risultato = {}
+    for aid, g in df.groupby("anagrafica_id"):
+        if int(aid) not in ids:
+            continue
+        stato, testo = disciplina.situazione(g.sort_values(["data_comunicato", "numero_comunicato"], ascending=False).to_dict("records"), oggi,
+                                             lambda d: sum(1 for x in date_partite if x > d), (ultimo["data"], int(ultimo["numero"])))
+        if stato:
+            risultato[int(aid)] = (stato, testo)
+    return risultato
+
+
+def segno_disciplina(situazione):
+    """Segnalino da accostare al nome in elenchi e menu."""
+    if not situazione:
+        return ""
+    return " ⛔ squalificato" if situazione[0] == "SQUALIFICATO" else " ⚠️ diffidato"
+
+
+def scheda_tabellino(cat_sq, nomi_sq):
+    """Tabellino della partita: risultato e, per ogni giocatore, titolare, minuti, reti, assist, ammonizioni ed espulsione."""
+    df_ev = leggi_df("SELECT * FROM eventi_squadra WHERE tipo = 'PARTITA' AND categoria = ? ORDER BY data DESC, id DESC", [cat_sq])
+    if df_ev.empty:
+        st.info("Per compilare il tabellino serve prima la convocazione della partita (scheda «Convocazioni»).")
+        return
+    etich = {f"{pd.to_datetime(r.data).strftime('%d/%m/%Y')}" + (f" contro {r.avversario}" if r.avversario else ""): int(r.id) for r in df_ev.itertuples()}
+    ev_id = etich[st.selectbox("Partita", list(etich), key="tab_partita")]
+    ev = df_ev[df_ev["id"] == ev_id].iloc[0]
+    salvati = leggi_df("SELECT * FROM tabellino_giocatori WHERE evento_id = ?", [ev_id]).set_index("anagrafica_id")
+    convocati = leggi_df("SELECT anagrafica_id FROM presenze_evento WHERE evento_id = ? AND stato = 'CONVOCATO'", [ev_id])["anagrafica_id"].tolist()
+    in_tabella = [a for a in dict.fromkeys(convocati + salvati.index.tolist()) if a in nomi_sq]
+    altri = [a for a in nomi_sq if a not in in_tabella]
+    extra = st.multiselect("Altri giocatori che hanno giocato (non convocati)", altri, format_func=lambda a: nomi_sq[a],
+                           placeholder="Nessuno", key=f"tab_extra_{ev_id}")
+    elenco = in_tabella + extra
+    with st.form(f"tabellino_{ev_id}_{len(extra)}"):
+        r1, r2, r3 = st.columns([1, 1, 2])
+        noto = pd.notna(ev["gol_nostri"])
+        gol_n = r1.number_input("Reti nostre", min_value=0, value=int(ev["gol_nostri"]) if noto else 0, step=1)
+        gol_a = r2.number_input("Reti avversarie", min_value=0, value=int(ev["gol_avversari"]) if noto else 0, step=1)
+        con_risultato = r3.checkbox("Indica il risultato", value=bool(noto), help="Lascia vuoto se non vuoi registrarlo.")
+        righe = pd.DataFrame({
+            "Giocatore": [nomi_sq[a] for a in elenco],
+            "Ha giocato": [bool(a in salvati.index) or a in extra for a in elenco],
+            "Titolare": [bool(salvati.at[a, "titolare"]) if a in salvati.index else False for a in elenco],
+            "Minuti": [salvati.at[a, "minuti"] if a in salvati.index and pd.notna(salvati.at[a, "minuti"]) else None for a in elenco],
+            "Reti": [int(salvati.at[a, "reti"]) if a in salvati.index else 0 for a in elenco],
+            "Assist": [int(salvati.at[a, "assist"]) if a in salvati.index else 0 for a in elenco],
+            "Ammonizioni": [int(salvati.at[a, "ammonizioni"]) if a in salvati.index else 0 for a in elenco],
+            "Espulso": [bool(salvati.at[a, "espulso"]) if a in salvati.index else False for a in elenco],
+        })
+        modificata = st.data_editor(
+            righe, hide_index=True, width="stretch", disabled=["Giocatore"], key=f"tab_editor_{ev_id}_{len(extra)}",
+            column_config={"Minuti": st.column_config.NumberColumn(min_value=0, max_value=130, step=1),
+                           "Reti": st.column_config.NumberColumn(min_value=0, step=1),
+                           "Assist": st.column_config.NumberColumn(min_value=0, step=1),
+                           "Ammonizioni": st.column_config.NumberColumn(min_value=0, max_value=2, step=1)})
+        if st.form_submit_button("💾 Salva il tabellino", type="primary"):
+            if con_risultato and int(modificata["Reti"].sum()) > gol_n:
+                st.error(f"Le reti dei giocatori ({int(modificata['Reti'].sum())}) superano quelle del risultato ({gol_n}).")
+            else:
+                try:
+                    with db_write() as w_conn:
+                        w_conn.execute("UPDATE eventi_squadra SET gol_nostri = ?, gol_avversari = ? WHERE id = ?",
+                                       [int(gol_n) if con_risultato else None, int(gol_a) if con_risultato else None, ev_id])
+                        w_conn.execute("DELETE FROM tabellino_giocatori WHERE evento_id = ?", [ev_id])
+                        for aid, (_, r) in zip(elenco, modificata.iterrows()):
+                            if r["Ha giocato"] or r["Reti"] or r["Assist"] or r["Ammonizioni"] or r["Espulso"]:
+                                w_conn.execute(
+                                    "INSERT INTO tabellino_giocatori (evento_id, anagrafica_id, titolare, minuti, reti, assist, ammonizioni, espulso) "
+                                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                                    [ev_id, int(aid), int(bool(r["Titolare"])), None if pd.isna(r["Minuti"]) else int(r["Minuti"]), int(r["Reti"]),
+                                     int(r["Assist"]), int(r["Ammonizioni"]), int(bool(r["Espulso"]))])
+                    st.session_state["flash"] = "Tabellino salvato."
+                    st.rerun()
+                except Exception as ex_tab:
+                    st.error(f"Errore nel salvataggio del tabellino: {ex_tab}")
+
+
+def scheda_disciplina(con_contabilita):
+    """Importazione del comunicato ufficiale (PDF) per la propria società, ammende da registrare come debito ed elenco dei provvedimenti."""
+    st.markdown("**📥 Importa il comunicato ufficiale**")
+    st.caption("Carica il PDF del comunicato: il programma legge solo ciò che riguarda la tua società (ammonizioni, diffide, squalifiche, ammende, "
+               "reti dei marcatori). I nomi delle altre società non vengono salvati. Prima di registrare vedi cosa ha letto e puoi correggerlo.")
+    file = st.file_uploader("Comunicato (PDF)", type="pdf", key="disc_pdf") if utenti.puo_scrivere(utente_corrente()["ruolo"]) else None
+    if file is not None:
+        try:
+            testo = disciplina.testo_pdf(file.getvalue())
+        except Exception as ex_pdf:
+            st.error(f"Non riesco a leggere il PDF: {ex_pdf}")
+            testo = ""
+        squadre = disciplina.nomi_squadre(testo) if testo else []
+        if testo and not squadre:
+            st.warning("Non trovo l'elenco delle squadre nel comunicato: il formato potrebbe essere diverso da quello previsto. Non registro nulla.")
+        elif squadre:
+            salvato = leggi_impostazione("nome_nei_comunicati", "")
+            if salvato in squadre:
+                predef = squadre.index(salvato)
+            else:
+                simili = [difflib.SequenceMatcher(None, " ".join(disciplina.chiave_nome(NOME_SOCIETA)), " ".join(disciplina.chiave_nome(s))).ratio()
+                          for s in squadre]
+                predef = simili.index(max(simili)) if NOME_SOCIETA else 0
+            nostra = st.selectbox("Il nome della tua società nel comunicato", squadre, index=predef, key="disc_squadra")
+            dati = disciplina.leggi_comunicato(testo, nostra)
+            for av in dati["avvisi"]:
+                st.warning(av)
+            if dati["numero"] is None:
+                return
+            gia = leggi_df("SELECT id FROM comunicati_disciplina WHERE numero = ? AND data = ?", [dati["numero"], dati["data"]])
+            st.markdown(f"**Comunicato n. {dati['numero']} del {pd.to_datetime(dati['data']).strftime('%d/%m/%Y')}**")
+            if not gia.empty:
+                st.info("Questo comunicato è già stato registrato: se lo registri di nuovo le voci vengono sostituite "
+                        "(le ammende già registrate come debito restano e non vengono duplicate).")
+            persone = leggi_df("SELECT a.id, a.denominazione FROM anagrafiche a JOIN tesserati_calcio t ON t.anagrafica_id = a.id ORDER BY a.denominazione")
+            candidati = dict(zip(persone["id"].astype(int), persone["denominazione"]))
+            opzioni = [None] + list(candidati)
+            voci = [p for p in dati["provvedimenti"] if p["tipo"] != "AMMENDA"] + [dict(m, tipo="RETI") for m in dati["marcatori"]]
+            ammende = [p for p in dati["provvedimenti"] if p["tipo"] == "AMMENDA"]
+            if not voci and not ammende:
+                st.info("Nel comunicato non ci sono provvedimenti né reti per la tua società.")
+            with st.form(f"disc_conferma_{dati['numero']}_{dati['data']}_{nostra}"):
+                scelte = []
+                for i, v in enumerate(voci):
+                    certo, sugg = disciplina.abbina_nome(v["nome"], candidati)
+                    iniziale = certo or (sugg[0] if sugg else None)
+                    c1, c2 = st.columns([2, 3])
+                    if v["tipo"] == "RETI":
+                        c1.markdown(f"⚽ **{v['nome']}** · {v['reti']} reti")
+                    else:
+                        dettaglio = (f" fino al {pd.to_datetime(v['fino_al']).strftime('%d/%m/%Y')}" if v.get("fino_al") else "") \
+                            + (f" · {v['giornate']} giornate" if v.get("giornate") and v["tipo"] == "SQUALIFICA_GIORNATE" else "")
+                        c1.markdown(f"**{v['nome']}** · {disciplina.TIPI[v['tipo']]}{dettaglio}")
+                    scelte.append(c2.selectbox("Persona", opzioni, index=opzioni.index(iniziale), key=f"disc_ab_{i}",
+                                               format_func=lambda a: "— non registrare —" if a is None else candidati[a],
+                                               label_visibility="collapsed",
+                                               help="Persona del programma a cui assegnare la voce. Se il nome non coincide, scegli la persona giusta."))
+                for p in ammende:
+                    st.markdown(f"💶 **Ammenda alla società: € {p['importo']:,.2f}**" if p["importo"] else "💶 **Ammenda alla società** (importo da completare)")
+                if st.form_submit_button("💾 Registra nel programma", type="primary", disabled=not (voci or ammende)):
+                    try:
+                        with db_write() as w_conn:
+                            w_conn.execute("INSERT INTO comunicati_disciplina (numero, data, ente, importato_il) VALUES (?, ?, ?, ?) "
+                                           "ON CONFLICT(numero, data) DO UPDATE SET ente = excluded.ente",
+                                           [dati["numero"], dati["data"], dati["ente"], datetime.datetime.now().isoformat(timespec="seconds")])
+                            cid = w_conn.execute("SELECT id FROM comunicati_disciplina WHERE numero = ? AND data = ?", [dati["numero"], dati["data"]]).fetchone()[0]
+                            w_conn.execute("DELETE FROM provvedimenti_disciplinari WHERE comunicato_id = ? AND spesa_id IS NULL", [cid])
+                            w_conn.execute("DELETE FROM reti_comunicato WHERE comunicato_id = ?", [cid])
+                            for v, aid in zip(voci, scelte):
+                                if aid is None:
+                                    continue
+                                if v["tipo"] == "RETI":
+                                    w_conn.execute("INSERT OR REPLACE INTO reti_comunicato (comunicato_id, anagrafica_id, reti) VALUES (?, ?, ?)",
+                                                   [cid, int(aid), int(v["reti"])])
+                                else:
+                                    w_conn.execute(
+                                        "INSERT INTO provvedimenti_disciplinari (comunicato_id, anagrafica_id, nome_comunicato, tipo, giornate, fino_al, articolo, importo, testo) "
+                                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                        [cid, int(aid), v["nome"], v["tipo"], v.get("giornate"), v.get("fino_al"), v.get("articolo"), v.get("importo"), v["testo"]])
+                            gia_reg = [r[0] for r in w_conn.execute(
+                                "SELECT importo FROM provvedimenti_disciplinari WHERE comunicato_id = ? AND tipo = 'AMMENDA'", [cid]).fetchall()]
+                            for p in ammende:
+                                if p["importo"] in gia_reg:
+                                    gia_reg.remove(p["importo"])
+                                    continue
+                                w_conn.execute(
+                                    "INSERT INTO provvedimenti_disciplinari (comunicato_id, nome_comunicato, tipo, articolo, importo, testo) "
+                                    "VALUES (?, ?, 'AMMENDA', ?, ?, ?)", [cid, nostra, p.get("articolo"), p.get("importo"), p["testo"]])
+                            salva_impostazioni(w_conn, {"nome_nei_comunicati": nostra})
+                        st.session_state["flash"] = "Comunicato registrato."
+                        st.rerun()
+                    except Exception as ex_cu:
+                        st.error(f"Errore nella registrazione del comunicato: {ex_cu}")
+
+    da_pagare = leggi_df(
+        "SELECT p.id, p.importo, p.articolo, c.numero, c.data, c.ente FROM provvedimenti_disciplinari p JOIN comunicati_disciplina c ON c.id = p.comunicato_id "
+        "WHERE p.tipo = 'AMMENDA' AND p.spesa_id IS NULL AND p.importo IS NOT NULL ORDER BY c.data, c.numero")
+    if not da_pagare.empty and not con_contabilita:
+        st.info(f"Ammende da registrare come debito: {len(da_pagare)}. Se ne occupa la segreteria.")
+    elif not da_pagare.empty:
+        st.markdown("**💶 Ammende da registrare come debito**")
+        st.caption("L'ammenda è un debito che nasce con il comunicato: la registro come spesa «da pagare» (conto multe e sanzioni sportive). "
+                   "Quando la paghi, la chiudi dalla pagina «Spese e fornitori» → «Spese da pagare».")
+        for r in da_pagare.itertuples():
+            with st.form(f"amm_{r.id}"):
+                a1, a2, a3 = st.columns([2, 1, 1])
+                forn = a1.text_input("Creditore (chi riceve il pagamento)", value=str(r.ente or ""),
+                                     help="Se esiste già tra i fornitori viene usato quello, altrimenti viene creato.")
+                con_scad = a3.checkbox("Indico la scadenza", help="Se non la indichi resta «da completare».")
+                scad = a2.date_input("Scadenza", format="DD/MM/YYYY", disabled=not con_scad)
+                st.caption(f"Comunicato n. {r.numero} del {pd.to_datetime(r.data).strftime('%d/%m/%Y')}"
+                           + (f" · art. {r.articolo}" if r.articolo else "") + f" · € {float(r.importo):,.2f}")
+                if st.form_submit_button("➕ Registra il debito"):
+                    if not forn.strip():
+                        st.error("Indica a chi va pagata l'ammenda.")
+                    else:
+                        try:
+                            with db_write() as w_conn:
+                                trovato = w_conn.execute("SELECT id FROM anagrafiche WHERE tipo = 'FORNITORE' AND denominazione = ? LIMIT 1", [forn.strip()]).fetchone()
+                                id_forn = int(trovato[0]) if trovato else w_conn.execute(
+                                    "INSERT INTO anagrafiche (tipo, denominazione) VALUES ('FORNITORE', ?)", [forn.strip()]).lastrowid
+                                mov = registra_spesa(w_conn, id_forn, forn.strip(), f"CU {r.numero}", r.data, f"Ammenda sportiva (comunicato n. {r.numero})",
+                                                     "40.01.006", float(r.importo), 0.0, None, data_scadenza=str(scad) if con_scad else None)
+                                spesa = w_conn.execute("SELECT id FROM fatture_passive WHERE movimento_id = ? ORDER BY id DESC LIMIT 1", [mov]).fetchone()[0]
+                                w_conn.execute("UPDATE provvedimenti_disciplinari SET spesa_id = ? WHERE id = ?", [int(spesa), int(r.id)])
+                            st.session_state["flash"] = f"Ammenda di € {float(r.importo):,.2f} registrata come debito da pagare."
+                            st.rerun()
+                        except Exception as ex_amm:
+                            st.error(f"Errore nella registrazione dell'ammenda: {ex_amm}")
+
+    df_reg = leggi_df(
+        "SELECT p.anagrafica_id, c.numero, c.data, COALESCE(a.denominazione, p.nome_comunicato) AS persona, p.tipo, p.giornate, p.fino_al, p.importo, p.spesa_id "
+        "FROM provvedimenti_disciplinari p JOIN comunicati_disciplina c ON c.id = p.comunicato_id LEFT JOIN anagrafiche a ON a.id = p.anagrafica_id "
+        "ORDER BY c.data DESC, c.numero DESC, p.id")
+    if utenti.limita_squadre(utente_corrente()["ruolo"]):  # l'allenatore vede i provvedimenti dei giocatori delle sue squadre e quelli della società
+        proprie = set(leggi_df("SELECT anagrafica_id FROM tesserati_calcio WHERE categoria IN (%s)" % ",".join("?" * len(utente_corrente()["squadre"])) ,
+                               list(utente_corrente()["squadre"]))["anagrafica_id"]) if utente_corrente()["squadre"] else set()
+        df_reg = df_reg[(df_reg["tipo"] == "AMMENDA") | df_reg["anagrafica_id"].isin(proprie)]
+    st.markdown("**📜 Provvedimenti registrati**")
+    if df_reg.empty:
+        st.info("Nessun comunicato registrato finora.")
+    else:
+        def dettaglio(g, f, i, s, t):
+            parti = []
+            if pd.notna(g) and t == "SQUALIFICA_GIORNATE":
+                parti.append(f"{int(g)} giornate")
+            if pd.notna(f) and f:
+                parti.append("fino al " + pd.to_datetime(f).strftime("%d/%m/%Y"))
+            if pd.notna(i):
+                parti.append(f"€ {float(i):,.2f}" + (" · debito registrato" if pd.notna(s) else " · da registrare"))
+            return " · ".join(parti)
+        st.dataframe(pd.DataFrame({
+            "Comunicato": [f"n. {n} del {pd.to_datetime(d).strftime('%d/%m/%Y')}" for n, d in zip(df_reg["numero"], df_reg["data"])],
+            "Persona": df_reg["persona"].where(df_reg["tipo"] != "AMMENDA", "Società"), "Provvedimento": df_reg["tipo"].map(disciplina.TIPI),
+            "Dettaglio": [dettaglio(*x) for x in zip(df_reg["giornate"], df_reg["fino_al"], df_reg["importo"], df_reg["spesa_id"], df_reg["tipo"])]}),
+            width="stretch", hide_index=True)
+
+
 def pagina_squadra():
     st.subheader("📣 Convocazioni e presenze")
     categorie_sq = [c for c in CATEGORIE_LISTA if c != "STAFF"]
@@ -4248,7 +4502,14 @@ def pagina_squadra():
     cat_sq = st.selectbox("Squadra", usate, key="sq_categoria")
     gioc_cat = df_gioc[df_gioc["categoria"] == cat_sq]
     nomi_sq = {int(r.id): r.denominazione for r in gioc_cat.itertuples()}
-    tab_conv, tab_pres, tab_stat, tab_rosa = st.tabs(["⚽ Convocazioni", "✅ Presenze allenamenti", "📊 Statistiche", "👥 Rosa"])
+    con_contabilita = utente_corrente()["ruolo"] in ("ADMIN", "SEGRETERIA")  # solo la segreteria registra le ammende come debiti
+    tab_conv, tab_pres, tab_tabellino, tab_stat, tab_rosa, tab_disc = st.tabs(
+        ["⚽ Convocazioni", "✅ Presenze allenamenti", "📝 Tabellino", "📊 Statistiche", "👥 Rosa", "⚖️ Disciplina"])
+    situazioni = situazione_disciplinare(set(nomi_sq), cat_sq)
+    with tab_disc:
+        scheda_disciplina(con_contabilita)
+    with tab_tabellino:
+        scheda_tabellino(cat_sq, nomi_sq)
 
     with tab_rosa:
         oggi_rosa = datetime.date.today().isoformat()
@@ -4256,6 +4517,7 @@ def pagina_squadra():
             "Giocatore": gioc_cat["denominazione"], "Telefono": gioc_cat["telefono"].fillna(""), "Email": gioc_cat["email"].fillna(""),
             "Certificato medico": [f"✅ valido fino al {pd.Timestamp(s).strftime('%d/%m/%Y')}" if pd.notna(s) and str(s) >= oggi_rosa
                                    else "⛔ scaduto o mancante" for s in gioc_cat["scad"]],
+            "Disciplina": [situazioni[int(a)][1] if int(a) in situazioni else "" for a in gioc_cat["id"]],
         }), width="stretch", hide_index=True)
         st.caption(f"{len(gioc_cat)} giocatori attivi.")
 
@@ -4273,7 +4535,7 @@ def pagina_squadra():
             def etichetta_conv(aid):
                 scad = gioc_cat.loc[gioc_cat["id"] == aid, "scad"].iloc[0]
                 valido = pd.notna(scad) and str(scad) >= str(data_cv)
-                return nomi_sq[aid] + ("" if valido else " ⛔ certificato non valido")
+                return nomi_sq[aid] + ("" if valido else " ⛔ certificato non valido") + segno_disciplina(situazioni.get(int(aid)))
             conv_cv = st.multiselect("Convocati", list(nomi_sq), format_func=etichetta_conv, placeholder="Scrivi il nome per cercare o scegli i giocatori")
             note_cv = st.text_area("Note per i convocati (facoltative)", height=70, placeholder="es. portare la tuta di rappresentanza")
             if st.form_submit_button("💾 Salva la convocazione", type="primary"):
@@ -4317,6 +4579,7 @@ def pagina_squadra():
             if b2.button("🗑️ Elimina questa convocazione", key=f"sq_del_{ev_sel}"):
                 with db_write() as w_conn:
                     w_conn.execute("DELETE FROM presenze_evento WHERE evento_id = ?", [ev_sel])
+                    w_conn.execute("DELETE FROM tabellino_giocatori WHERE evento_id = ?", [ev_sel])
                     w_conn.execute("DELETE FROM eventi_squadra WHERE id = ?", [ev_sel])
                 st.session_state["flash"] = "Convocazione eliminata."
                 st.session_state.pop("sq_conv_sel_id", None)
@@ -4369,8 +4632,18 @@ def pagina_squadra():
             "WHERE e.categoria = ? AND e.data BETWEEN ? AND ?", [cat_sq, str(ini_sq), str(fin_sq)])
         n_all_sq = leggi_df("SELECT COUNT(*) AS n FROM eventi_squadra WHERE tipo = 'ALLENAMENTO' AND categoria = ? AND data BETWEEN ? AND ?",
                             [cat_sq, str(ini_sq), str(fin_sq)])["n"].iloc[0]
-        st.caption(f"Esercizio {etich_sq}: {int(n_all_sq)} allenamenti registrati.")
-        st.dataframe(squadra.statistiche(df_pr), width="stretch", hide_index=True)
+        df_dist = leggi_df(
+            "SELECT r.anagrafica_id, COUNT(*) AS n FROM distinte_gara_righe r JOIN distinte_gara d ON d.id = r.distinta_id "
+            "WHERE r.sezione = 'GIOCATORE' AND r.anagrafica_id IS NOT NULL AND d.data_gara BETWEEN ? AND ? GROUP BY r.anagrafica_id", [str(ini_sq), str(fin_sq)])
+        df_tabs = leggi_df(
+            "SELECT t.* FROM tabellino_giocatori t JOIN eventi_squadra e ON e.id = t.evento_id WHERE e.categoria = ? AND e.data BETWEEN ? AND ?",
+            [cat_sq, str(ini_sq), str(fin_sq)])
+        df_disc = leggi_df(
+            "SELECT p.anagrafica_id, p.tipo FROM provvedimenti_disciplinari p JOIN comunicati_disciplina c ON c.id = p.comunicato_id "
+            "WHERE p.anagrafica_id IS NOT NULL AND c.data BETWEEN ? AND ?", [str(ini_sq), str(fin_sq)])
+        st.caption(f"Esercizio {etich_sq}: {int(n_all_sq)} allenamenti registrati. Reti, assist, minuti e cartellini vengono dal tabellino "
+                   "delle partite; le squalifiche dai comunicati importati.")
+        st.dataframe(disciplina.statistiche(nomi_sq, df_pr, df_dist, df_tabs, df_disc), width="stretch", hide_index=True)
 
 
 def pagina_account():

@@ -24,3 +24,7 @@ __pycache__/
 
 # Documenti contabili e dati della società: restano solo in locale
 *.pdf
+
+# Strumenti e cartelle di lavoro locali
+.claude/
+import/

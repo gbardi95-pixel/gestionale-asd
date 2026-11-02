@@ -631,6 +631,56 @@ def init_db(versione_schema=None):
         cursor.execute(f"CREATE TRIGGER IF NOT EXISTS {nome} BEFORE {evento} ON {tabella} WHEN {condizione} "
                        f"BEGIN SELECT RAISE(ABORT, '{ERRORE_ESERCIZIO_CHIUSO}'); END;")
 
+    # Disciplina: comunicati ufficiali importati, provvedimenti della società e dei suoi tesserati, reti dichiarate dal comunicato
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS comunicati_disciplina (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        numero INTEGER NOT NULL,
+        data TEXT NOT NULL,
+        ente TEXT,
+        importato_il TEXT,
+        UNIQUE(numero, data)
+    );
+    """)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS provvedimenti_disciplinari (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        comunicato_id INTEGER NOT NULL REFERENCES comunicati_disciplina(id) ON DELETE CASCADE,
+        anagrafica_id INTEGER REFERENCES anagrafiche(id) ON DELETE SET NULL,
+        nome_comunicato TEXT,
+        tipo TEXT NOT NULL CHECK(tipo IN ('AMMONIZIONE', 'DIFFIDA', 'SQUALIFICA_SOMMA', 'SQUALIFICA_GIORNATE', 'SQUALIFICA_TEMPO', 'AMMENDA', 'ALTRO')),
+        giornate INTEGER,
+        fino_al TEXT,
+        articolo TEXT,
+        importo REAL,
+        testo TEXT,
+        spesa_id INTEGER
+    );
+    """)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS reti_comunicato (
+        comunicato_id INTEGER NOT NULL REFERENCES comunicati_disciplina(id) ON DELETE CASCADE,
+        anagrafica_id INTEGER NOT NULL REFERENCES anagrafiche(id) ON DELETE CASCADE,
+        reti INTEGER NOT NULL,
+        PRIMARY KEY (comunicato_id, anagrafica_id)
+    );
+    """)
+    # Tabellino: cosa ha fatto ogni giocatore in una partita (una riga per giocatore e partita)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS tabellino_giocatori (
+        evento_id INTEGER NOT NULL REFERENCES eventi_squadra(id) ON DELETE CASCADE,
+        anagrafica_id INTEGER NOT NULL REFERENCES anagrafiche(id) ON DELETE CASCADE,
+        titolare INTEGER NOT NULL DEFAULT 0,
+        minuti INTEGER,
+        reti INTEGER NOT NULL DEFAULT 0,
+        assist INTEGER NOT NULL DEFAULT 0,
+        ammonizioni INTEGER NOT NULL DEFAULT 0,
+        espulso INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (evento_id, anagrafica_id)
+    );
+    """)
+
+
     # Migrazione: socio di un'altra società, qui tesserato solo con la scheda attività
     try:
         cursor.execute("ALTER TABLE tesserati_calcio ADD COLUMN socio_altra_societa INTEGER NOT NULL DEFAULT 0;")
@@ -671,6 +721,9 @@ def init_db(versione_schema=None):
         "ALTER TABLE fatture_sponsor_398 ADD COLUMN xml_base64 TEXT;",
         # Distinta nata da una convocazione della squadra (per non riproporla due volte)
         "ALTER TABLE distinte_gara ADD COLUMN evento_id INTEGER;",
+        # Risultato della partita (inserito nel tabellino)
+        "ALTER TABLE eventi_squadra ADD COLUMN gol_nostri INTEGER;",
+        "ALTER TABLE eventi_squadra ADD COLUMN gol_avversari INTEGER;",
     ):
         try:
             cursor.execute(alter_sql)
