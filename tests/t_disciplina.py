@@ -100,7 +100,7 @@ c.execute("INSERT INTO provvedimenti_disciplinari (comunicato_id, anagrafica_id,
 c.execute("INSERT INTO provvedimenti_disciplinari (comunicato_id, anagrafica_id, tipo, giornate) VALUES (?, ?, 'SQUALIFICA_GIORNATE', 2)", [cu, ids["Andrea Gialli"]])
 c.execute("INSERT INTO provvedimenti_disciplinari (comunicato_id, tipo, importo) VALUES (?, 'AMMENDA', 20)", [cu])
 ev = c.execute("INSERT INTO eventi_squadra (tipo, data, categoria, avversario) VALUES ('PARTITA', ?, 'PRIMA_SQUADRA', 'Avversari')",
-               [(oggi + datetime.timedelta(days=4)).isoformat()]).lastrowid
+               [(oggi - datetime.timedelta(days=1)).isoformat()]).lastrowid
 for nome in ("Mario Rossi", "Andrea Gialli"):
     c.execute("INSERT INTO presenze_evento (evento_id, anagrafica_id, stato) VALUES (?, ?, 'CONVOCATO')", [ev, ids[nome]])
 c.commit()

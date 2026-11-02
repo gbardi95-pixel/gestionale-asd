@@ -724,6 +724,12 @@ def init_db(versione_schema=None):
         # Risultato della partita (inserito nel tabellino)
         "ALTER TABLE eventi_squadra ADD COLUMN gol_nostri INTEGER;",
         "ALTER TABLE eventi_squadra ADD COLUMN gol_avversari INTEGER;",
+        # Partita dal calendario della lega: squadre (come scritte nel calendario), competizione, giornata e numero gara
+        "ALTER TABLE eventi_squadra ADD COLUMN squadra_casa TEXT;",
+        "ALTER TABLE eventi_squadra ADD COLUMN squadra_ospite TEXT;",
+        "ALTER TABLE eventi_squadra ADD COLUMN competizione TEXT;",
+        "ALTER TABLE eventi_squadra ADD COLUMN giornata TEXT;",
+        "ALTER TABLE eventi_squadra ADD COLUMN numero_gara TEXT;",
     ):
         try:
             cursor.execute(alter_sql)

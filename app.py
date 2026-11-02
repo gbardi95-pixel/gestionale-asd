@@ -13,7 +13,7 @@ import warnings
 import pandas as pd
 import streamlit as st
 from contextlib import contextmanager
-from modules import backup, disciplina, distinte, esercizio, estratti, f24, fattura_xml, lavoro_sportivo, libro_soci, preventivo, quote, rendiconto_pdf, ricevuta_pdf, scadenze, solleciti, squadra, tesseramento, utenti
+from modules import backup, calendario, disciplina, distinte, esercizio, estratti, f24, fattura_xml, lavoro_sportivo, libro_soci, preventivo, quote, rendiconto_pdf, ricevuta_pdf, scadenze, solleciti, sportbit, squadra, tesseramento, utenti
 from modules import cap as cap_comuni
 from modules.db import ERRORE_ESERCIZIO_CHIUSO, PIANO_DEI_CONTI_ASD, _turso_credentials, connessione_replica, get_connection, init_db, usa_turso, versione_schema_db
 
@@ -22,7 +22,7 @@ from modules.db import ERRORE_ESERCIZIO_CHIUSO, PIANO_DEI_CONTI_ASD, _turso_cred
 # ---------------------------------------------------------
 # Incrementare a ogni modifica dello schema del DB: forza init_db() (e le migrazioni)
 # anche quando Streamlit Cloud aggiorna il codice senza riavviare il server.
-VERSIONE_SCHEMA_DB = 19
+VERSIONE_SCHEMA_DB = 20
 
 @st.cache_resource(show_spinner="Avvio dell'app…")
 def _setup_database(versione_schema):
@@ -50,6 +50,12 @@ try:
     NOME_SOCIETA = st.secrets.get("NOME_SOCIETA", "")
 except Exception:
     NOME_SOCIETA = ""
+
+# Indirizzo delle pagine partita per l'importazione dei tabellini (Secrets: SPORTBIT_URL, con {codice}); vuoto = modello predefinito di Sportbit
+try:
+    SPORTBIT_URL = st.secrets.get("SPORTBIT_URL", "")
+except Exception:
+    SPORTBIT_URL = ""
 
 st.set_page_config(page_title=APP_TITLE, layout="wide", page_icon="⚽")
 
@@ -1877,14 +1883,15 @@ def pagina_distinte():
         etichette = {0: "➕ Nuova distinta"}
         # Convocazioni fatte dalla parte sportiva che non hanno ancora una distinta: la segreteria le trova già pronte
         df_conv = leggi_df(
-            "SELECT e.id, e.data, e.ora, e.categoria, e.avversario, e.luogo FROM eventi_squadra e "
-            "WHERE e.tipo = 'PARTITA' AND e.data >= ? AND NOT EXISTS (SELECT 1 FROM distinte_gara d WHERE d.evento_id = e.id) "
-            "ORDER BY e.data, e.id", [str(datetime.date.today() - datetime.timedelta(days=30))])
+            "SELECT e.id, e.data, e.ora, e.categoria, e.avversario, e.luogo, e.squadra_casa, e.squadra_ospite, e.competizione, "
+            "(SELECT COUNT(*) FROM presenze_evento p WHERE p.evento_id = e.id AND p.stato = 'CONVOCATO') AS convocati "
+            "FROM eventi_squadra e WHERE e.tipo = 'PARTITA' AND e.data BETWEEN ? AND ? AND NOT EXISTS (SELECT 1 FROM distinte_gara d WHERE d.evento_id = e.id) "
+            "ORDER BY e.data, e.id", [str(datetime.date.today() - datetime.timedelta(days=30)), str(datetime.date.today() + datetime.timedelta(days=14))])
         if utenti.limita_squadre(utente_corrente()["ruolo"]):
             df_conv = df_conv[df_conv["categoria"].isin(utente_corrente()["squadre"])]
         conv_righe = {f"c{int(r.id)}": r for r in df_conv.itertuples()}
         for chiave_cv, r in conv_righe.items():
-            etichette[chiave_cv] = (f"📣 Dalla convocazione del {pd.Timestamp(r.data).strftime('%d/%m/%Y')}"
+            etichette[chiave_cv] = (f"{'📣 Dalla convocazione' if r.convocati else '📅 Dal calendario'} del {pd.Timestamp(r.data).strftime('%d/%m/%Y')}"
                                     + (f" contro {r.avversario}" if r.avversario else "")
                                     + f" ({ETICHETTE_SQUADRE.get(r.categoria, r.categoria)}) - da completare")
         for r in df_archivio.itertuples():
@@ -1931,6 +1938,9 @@ def pagina_distinte():
         conv_ids = []
         if conv_sel is not None:  # la partita arriva dalla convocazione; l'avversario è la squadra ospite, da correggere se si gioca fuori
             testata_sal = {"data_gara": str(conv_sel.data), "ora": conv_sel.ora, "campo": conv_sel.luogo, "squadra_ospite": conv_sel.avversario}
+            if valore_pulito(conv_sel.squadra_casa) and valore_pulito(conv_sel.squadra_ospite):  # partita del calendario: casa e ospite come scritti dalla lega
+                testata_sal.update({"squadra_casa": conv_sel.squadra_casa, "squadra_ospite": conv_sel.squadra_ospite,
+                                    "competizione": valore_pulito(conv_sel.competizione)})
             conv_ids = [int(x) for x in leggi_df("SELECT anagrafica_id FROM presenze_evento WHERE evento_id = ? AND stato = 'CONVOCATO'",
                                                  [int(conv_sel.id)])["anagrafica_id"]]
         sal_gioc = {r["anagrafica_id"]: r for r in righe_sal if r["sezione"] == "GIOCATORE" and r.get("anagrafica_id")}
@@ -1973,8 +1983,8 @@ def pagina_distinte():
         if conv_sel is not None:
             def_gioc = [pid for pid in conv_ids if pid in ammessi]
             non_piu_ammessi = [pid for pid in conv_ids if pid not in ammessi]
-            st.info("Giocatori e dati della partita arrivano dalla convocazione: controlla la squadra di casa, aggiungi le persone autorizzate "
-                    "ad accedere al terreno di gioco e salva.")
+            st.info(("Giocatori e dati della partita arrivano dalla convocazione" if conv_ids else "I dati della partita arrivano dal calendario")
+                    + ": controlla la squadra di casa, aggiungi le persone autorizzate ad accedere al terreno di gioco e salva.")
         else:
             def_gioc = [pid for pid in sal_gioc if pid in ammessi]
             non_piu_ammessi = [pid for pid in sal_gioc if pid not in ammessi]
@@ -4264,11 +4274,87 @@ def segno_disciplina(situazione):
     return " ⛔ squalificato" if situazione[0] == "SQUALIFICATO" else " ⚠️ diffidato"
 
 
+def importa_da_sportbit(ev_id, ev, nomi_sq):
+    """Risultato, reti, ammonizioni ed espulsioni della partita letti dalla pagina pubblica di Sportbit, da controllare prima di applicarli."""
+    chiave = f"sb_dati_{ev_id}"
+    with st.expander("🔗 Importa da Sportbit (risultato, reti e cartellini)", expanded=chiave in st.session_state):
+        st.caption("Apri la partita sul sito, copia l'indirizzo della pagina e incollalo qui. Vengono presi solo i dati della tua squadra; "
+                   "minuti, titolari e assist restano da inserire a mano.")
+        st.caption("ℹ️ Funziona con le pagine partita di Sportbit (sportbit.it). Se la tua lega usa un altro sito o un altro indirizzo, "
+                   "va cambiato l'indirizzo (impostazione SPORTBIT_URL nei Secrets) o adattato `modules/sportbit.py`: vedi il README.")
+        c1, c2 = st.columns([4, 1])
+        link = c1.text_input("Link o codice della partita", key=f"sb_link_{ev_id}", placeholder="https://www.sportbit.it/Page/GameDetails.aspx?GameCompleteCode=…")
+        c2.write("")
+        if c2.button("🔍 Leggi", key=f"sb_leggi_{ev_id}"):
+            codice = sportbit.codice_partita(link)
+            if not codice:
+                st.error("Non riconosco il link: deve contenere il codice della partita, per esempio «…GameCompleteCode=2321-180498».")
+            else:
+                try:
+                    with st.spinner("Leggo la pagina di Sportbit…"):
+                        st.session_state[chiave] = sportbit.leggi_partita(sportbit.scarica_partita(codice, indirizzo=SPORTBIT_URL or None))
+                except (RuntimeError, ValueError) as ex_sb:
+                    st.session_state.pop(chiave, None)
+                    st.error(str(ex_sb))
+        dati = st.session_state.get(chiave)
+        if not dati:
+            return
+        st.markdown(f"**{dati['casa']} {'-' if dati['reti_casa'] is None else dati['reti_casa']} – "
+                    f"{'-' if dati['reti_ospite'] is None else dati['reti_ospite']} {dati['ospite']}**"
+                    + (f" · {pd.to_datetime(dati['data']).strftime('%d/%m/%Y')}" if dati["data"] else "") + (f" ore {dati['ora']}" if dati["ora"] else ""))
+        if dati["data"] and dati["data"] != str(ev["data"])[:10]:
+            st.warning(f"La data della partita su Sportbit è diversa da quella della convocazione ({pd.to_datetime(ev['data']).strftime('%d/%m/%Y')}): "
+                       "controlla di aver scelto la partita giusta.")
+        riferimento = leggi_impostazione("nome_nei_comunicati", "") or NOME_SOCIETA
+        simili = [difflib.SequenceMatcher(None, " ".join(disciplina.chiave_nome(riferimento)), " ".join(disciplina.chiave_nome(dati[l]))).ratio()
+                  for l in ("casa", "ospite")]
+        lato = st.radio("La tua squadra è", ["casa", "ospite"], index=simili.index(max(simili)), horizontal=True, key=f"sb_lato_{ev_id}",
+                        format_func=lambda l: f"{dati[l]} ({'casa' if l == 'casa' else 'ospite'})")
+        mie = dati["giocatori_" + lato]
+        nostre, loro = (dati["reti_casa"], dati["reti_ospite"]) if lato == "casa" else (dati["reti_ospite"], dati["reti_casa"])
+        if not mie:
+            st.info("Su Sportbit per la tua squadra non risultano reti né cartellini.")
+        opzioni = [None] + list(nomi_sq)
+        with st.form(f"sb_conferma_{ev_id}"):
+            scelte = []
+            for i, g in enumerate(mie):
+                certo, sugg = disciplina.abbina_nome(g["nome"], nomi_sq)
+                iniziale = certo or (sugg[0] if sugg else None)
+                a1, a2 = st.columns([2, 3])
+                a1.markdown(f"**{g['nome']}** · " + " ".join(x for x in (f"⚽ {g['reti']}" if g["reti"] else "", f"🟨 {g['ammonizioni']}" if g["ammonizioni"] else "",
+                                                                       f"🟥 {g['espulsioni']}" if g["espulsioni"] else "") if x))
+                scelte.append(a2.selectbox("Giocatore", opzioni, index=opzioni.index(iniziale), key=f"sb_ab_{ev_id}_{lato}_{i}", label_visibility="collapsed",
+                                           format_func=lambda a: "— non registrare —" if a is None else nomi_sq[a]))
+            if st.form_submit_button("✅ Applica al tabellino", type="primary"):
+                assegnate = sum(g["reti"] for g, a in zip(mie, scelte) if a is not None)
+                try:
+                    with db_write() as w_conn:
+                        if nostre is not None and loro is not None:
+                            w_conn.execute("UPDATE eventi_squadra SET gol_nostri = ?, gol_avversari = ? WHERE id = ?", [nostre, loro, ev_id])
+                        for g, aid in zip(mie, scelte):
+                            if aid is None:
+                                continue
+                            w_conn.execute(
+                                "INSERT INTO tabellino_giocatori (evento_id, anagrafica_id, titolare, reti, assist, ammonizioni, espulso) VALUES (?, ?, 0, ?, 0, ?, ?) "
+                                "ON CONFLICT(evento_id, anagrafica_id) DO UPDATE SET reti = excluded.reti, ammonizioni = excluded.ammonizioni, espulso = excluded.espulso",
+                                [ev_id, int(aid), g["reti"], min(g["ammonizioni"], 2), 1 if g["espulsioni"] else 0])
+                    st.session_state.pop(chiave, None)
+                    st.session_state[f"tab_ver_{ev_id}"] = st.session_state.get(f"tab_ver_{ev_id}", 0) + 1
+                    avviso = ""
+                    if nostre is not None and assegnate != nostre:
+                        avviso = f" Attenzione: reti assegnate ai giocatori {assegnate}, nel risultato {nostre} (autoreti o giocatori non abbinati?)."
+                    st.session_state["flash"] = "Dati di Sportbit applicati al tabellino: controlla e aggiungi minuti, titolari e assist." + avviso
+                    st.rerun()
+                except Exception as ex_ap:
+                    st.error(f"Errore nel salvataggio: {ex_ap}")
+
+
 def scheda_tabellino(cat_sq, nomi_sq):
     """Tabellino della partita: risultato e, per ogni giocatore, titolare, minuti, reti, assist, ammonizioni ed espulsione."""
-    df_ev = leggi_df("SELECT * FROM eventi_squadra WHERE tipo = 'PARTITA' AND categoria = ? ORDER BY data DESC, id DESC", [cat_sq])
+    df_ev = leggi_df("SELECT * FROM eventi_squadra WHERE tipo = 'PARTITA' AND categoria = ? AND data <= ? ORDER BY data DESC, id DESC",
+                     [cat_sq, str(datetime.date.today())])
     if df_ev.empty:
-        st.info("Per compilare il tabellino serve prima la convocazione della partita (scheda «Convocazioni»).")
+        st.info("Il tabellino si compila per le partite già giocate, registrate con la convocazione o importate dal calendario (scheda «Convocazioni»).")
         return
     etich = {f"{pd.to_datetime(r.data).strftime('%d/%m/%Y')}" + (f" contro {r.avversario}" if r.avversario else ""): int(r.id) for r in df_ev.itertuples()}
     ev_id = etich[st.selectbox("Partita", list(etich), key="tab_partita")]
@@ -4277,10 +4363,12 @@ def scheda_tabellino(cat_sq, nomi_sq):
     convocati = leggi_df("SELECT anagrafica_id FROM presenze_evento WHERE evento_id = ? AND stato = 'CONVOCATO'", [ev_id])["anagrafica_id"].tolist()
     in_tabella = [a for a in dict.fromkeys(convocati + salvati.index.tolist()) if a in nomi_sq]
     altri = [a for a in nomi_sq if a not in in_tabella]
+    versione = st.session_state.get(f"tab_ver_{ev_id}", 0)  # cambia quando l'importazione riscrive il tabellino, per ripartire dai dati salvati
+    importa_da_sportbit(ev_id, ev, nomi_sq)
     extra = st.multiselect("Altri giocatori che hanno giocato (non convocati)", altri, format_func=lambda a: nomi_sq[a],
-                           placeholder="Nessuno", key=f"tab_extra_{ev_id}")
+                           placeholder="Nessuno", key=f"tab_extra_{ev_id}_{versione}")
     elenco = in_tabella + extra
-    with st.form(f"tabellino_{ev_id}_{len(extra)}"):
+    with st.form(f"tabellino_{ev_id}_{len(extra)}_{versione}"):
         r1, r2, r3 = st.columns([1, 1, 2])
         noto = pd.notna(ev["gol_nostri"])
         gol_n = r1.number_input("Reti nostre", min_value=0, value=int(ev["gol_nostri"]) if noto else 0, step=1)
@@ -4297,7 +4385,7 @@ def scheda_tabellino(cat_sq, nomi_sq):
             "Espulso": [bool(salvati.at[a, "espulso"]) if a in salvati.index else False for a in elenco],
         })
         modificata = st.data_editor(
-            righe, hide_index=True, width="stretch", disabled=["Giocatore"], key=f"tab_editor_{ev_id}_{len(extra)}",
+            righe, hide_index=True, width="stretch", disabled=["Giocatore"], key=f"tab_editor_{ev_id}_{len(extra)}_{versione}",
             column_config={"Minuti": st.column_config.NumberColumn(min_value=0, max_value=130, step=1),
                            "Reti": st.column_config.NumberColumn(min_value=0, step=1),
                            "Assist": st.column_config.NumberColumn(min_value=0, step=1),
@@ -4482,6 +4570,50 @@ def scheda_disciplina(con_contabilita):
             width="stretch", hide_index=True)
 
 
+def importa_calendario(cat_sq):
+    """Partite del calendario della lega (Excel di Sportbit) registrate come partite della squadra, pronte per convocazioni e distinte."""
+    with st.expander("📅 Importa il calendario delle partite (Excel)"):
+        st.caption("Da Sportbit: «Calendario PDF-XLS» → «Calendario per singola squadra» → scarica l'Excel e caricalo qui. Le partite compaiono già pronte "
+                   "per le convocazioni e le distinte (squadre, data, ora, campo). Se ricarichi un calendario aggiornato, le partite già presenti "
+                   "vengono aggiornate senza toccare convocati e note. Il modello atteso è quello di Sportbit: con un altro formato il programma lo segnala.")
+        file = st.file_uploader("File Excel del calendario", type=["xlsx"], key="cal_xlsx") if utenti.puo_scrivere(utente_corrente()["ruolo"]) else None
+        if file is None:
+            return
+        try:
+            dati = calendario.leggi_calendario(file.getvalue())
+        except ValueError as ex_cal:
+            st.error(str(ex_cal))
+            return
+        st.markdown(f"**{dati['squadra']}** · {dati['competizione']} · {len(dati['partite'])} partite")
+        st.dataframe(pd.DataFrame({
+            "Giornata": [p["giornata"] for p in dati["partite"]],
+            "Data": [pd.to_datetime(p["data"]).strftime("%d/%m/%Y") for p in dati["partite"]], "Ora": [p["ora"] for p in dati["partite"]],
+            "Partita": [f"{p['casa']} - {p['ospite']}" for p in dati["partite"]], "Campo": [p["campo"] for p in dati["partite"]]}),
+            width="stretch", hide_index=True)
+        if st.button("💾 Registra le partite nella squadra", key="cal_registra", type="primary"):
+            nuove = aggiornate = 0
+            try:
+                with db_write() as w_conn:
+                    for p in dati["partite"]:
+                        valori = [p["data"], p["ora"] or None, p["avversario"], p["campo"] or None, p["casa"], p["ospite"],
+                                  dati["competizione"] or None, p["giornata"], p["numero_gara"] or None]
+                        esistente = w_conn.execute(
+                            "SELECT id FROM eventi_squadra WHERE tipo = 'PARTITA' AND categoria = ? AND ((numero_gara = ? AND ? <> '') OR data = ?) "
+                            "ORDER BY (numero_gara = ?) DESC LIMIT 1", [cat_sq, p["numero_gara"], p["numero_gara"], p["data"], p["numero_gara"]]).fetchone()
+                        if esistente:
+                            w_conn.execute("UPDATE eventi_squadra SET data = ?, ora = ?, avversario = ?, luogo = ?, squadra_casa = ?, squadra_ospite = ?, "
+                                           "competizione = ?, giornata = ?, numero_gara = ? WHERE id = ?", valori + [int(esistente[0])])
+                            aggiornate += 1
+                        else:
+                            w_conn.execute("INSERT INTO eventi_squadra (tipo, data, ora, avversario, luogo, squadra_casa, squadra_ospite, competizione, "
+                                           "giornata, numero_gara, categoria) VALUES ('PARTITA', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", valori + [cat_sq])
+                            nuove += 1
+                st.session_state["flash"] = f"Calendario registrato: {nuove} partite nuove, {aggiornate} aggiornate."
+                st.rerun()
+            except Exception as ex_reg:
+                st.error(f"Errore nella registrazione del calendario: {ex_reg}")
+
+
 def pagina_squadra():
     st.subheader("📣 Convocazioni e presenze")
     categorie_sq = [c for c in CATEGORIE_LISTA if c != "STAFF"]
@@ -4522,14 +4654,28 @@ def pagina_squadra():
         st.caption(f"{len(gioc_cat)} giocatori attivi.")
 
     with tab_conv:
-        with st.form("nuova_convocazione", clear_on_submit=True):
+        importa_calendario(cat_sq)
+        df_cal = leggi_df(
+            "SELECT * FROM eventi_squadra e WHERE e.tipo = 'PARTITA' AND e.categoria = ? AND e.data >= ? "
+            "AND NOT EXISTS (SELECT 1 FROM presenze_evento p WHERE p.evento_id = e.id AND p.stato = 'CONVOCATO') ORDER BY e.data, e.id",
+            [cat_sq, str(datetime.date.today())])
+        cal_righe = {int(r.id): r for r in df_cal.itertuples()}
+        cal_id = st.selectbox(
+            "Partita da convocare", [None] + list(cal_righe), key=f"sq_cal_sel_{cat_sq}",
+            format_func=lambda i: "— Partita fuori dal calendario (inserisco i dati a mano) —" if i is None else (
+                f"{pd.Timestamp(cal_righe[i].data).strftime('%d/%m/%Y')}" + (f" ore {cal_righe[i].ora}" if cal_righe[i].ora else "")
+                + (f" · {cal_righe[i].squadra_casa} - {cal_righe[i].squadra_ospite}" if valore_pulito(cal_righe[i].squadra_casa)
+                   else (f" · contro {cal_righe[i].avversario}" if cal_righe[i].avversario else ""))),
+            help="Le partite del calendario importato che non hanno ancora i convocati: data, ora, avversario e campo arrivano già compilati.")
+        cal = cal_righe.get(cal_id)
+        with st.form(f"nuova_convocazione_{cal_id}", clear_on_submit=True):
             st.markdown("**➕ Nuova convocazione**")
             k1, k2, k3 = st.columns(3)
-            data_cv = k1.date_input("Data della partita", format="DD/MM/YYYY")
-            ora_cv = k2.text_input("Ora della partita", placeholder="15:00")
-            avv_cv = k3.text_input("Avversario")
+            data_cv = k1.date_input("Data della partita", value=datetime.date.fromisoformat(str(cal.data)) if cal else datetime.date.today(), format="DD/MM/YYYY")
+            ora_cv = k2.text_input("Ora della partita", value=valore_pulito(cal.ora) or "" if cal else "", placeholder="15:00")
+            avv_cv = k3.text_input("Avversario", value=valore_pulito(cal.avversario) or "" if cal else "")
             k4, k5, k6 = st.columns(3)
-            luogo_cv = k4.text_input("Campo")
+            luogo_cv = k4.text_input("Campo", value=valore_pulito(cal.luogo) or "" if cal else "")
             rit_ora_cv = k5.text_input("Ora del ritrovo", placeholder="13:45")
             rit_luogo_cv = k6.text_input("Luogo del ritrovo")
             def etichetta_conv(aid):
@@ -4544,11 +4690,17 @@ def pagina_squadra():
                 else:
                     try:
                         with db_write() as w_conn:
-                            ev = w_conn.execute(
-                                "INSERT INTO eventi_squadra (tipo, data, ora, categoria, avversario, luogo, ritrovo_ora, ritrovo_luogo, note) "
-                                "VALUES ('PARTITA', ?, ?, ?, ?, ?, ?, ?, ?)",
-                                [str(data_cv), ora_cv.strip() or None, cat_sq, avv_cv.strip() or None, luogo_cv.strip() or None,
-                                 rit_ora_cv.strip() or None, rit_luogo_cv.strip() or None, note_cv.strip() or None]).lastrowid
+                            if cal:
+                                ev = int(cal.id)
+                                w_conn.execute("UPDATE eventi_squadra SET data = ?, ora = ?, avversario = ?, luogo = ?, ritrovo_ora = ?, ritrovo_luogo = ?, note = ? WHERE id = ?",
+                                               [str(data_cv), ora_cv.strip() or None, avv_cv.strip() or None, luogo_cv.strip() or None,
+                                                rit_ora_cv.strip() or None, rit_luogo_cv.strip() or None, note_cv.strip() or None, ev])
+                            else:
+                                ev = w_conn.execute(
+                                    "INSERT INTO eventi_squadra (tipo, data, ora, categoria, avversario, luogo, ritrovo_ora, ritrovo_luogo, note) "
+                                    "VALUES ('PARTITA', ?, ?, ?, ?, ?, ?, ?, ?)",
+                                    [str(data_cv), ora_cv.strip() or None, cat_sq, avv_cv.strip() or None, luogo_cv.strip() or None,
+                                     rit_ora_cv.strip() or None, rit_luogo_cv.strip() or None, note_cv.strip() or None]).lastrowid
                             for aid in conv_cv:
                                 w_conn.execute("INSERT INTO presenze_evento (evento_id, anagrafica_id, stato) VALUES (?, ?, 'CONVOCATO')", [ev, int(aid)])
                         st.session_state["flash"] = f"Convocazione salvata: {len(conv_cv)} giocatori."
@@ -4557,7 +4709,9 @@ def pagina_squadra():
                     except Exception as ex_cv:
                         st.error(f"Errore nel salvataggio della convocazione: {ex_cv}")
 
-        df_ev = leggi_df("SELECT * FROM eventi_squadra WHERE tipo = 'PARTITA' AND categoria = ? ORDER BY data DESC, id DESC", [cat_sq])
+        df_ev = leggi_df(
+            "SELECT * FROM eventi_squadra e WHERE e.tipo = 'PARTITA' AND e.categoria = ? "
+            "AND EXISTS (SELECT 1 FROM presenze_evento p WHERE p.evento_id = e.id AND p.stato = 'CONVOCATO') ORDER BY e.data DESC, e.id DESC", [cat_sq])
         if df_ev.empty:
             st.info("Nessuna convocazione salvata per questa squadra.")
         else:
@@ -4577,11 +4731,15 @@ def pagina_squadra():
             b1.link_button("💬 Condividi su WhatsApp", "https://wa.me/?text=" + urllib.parse.quote(testo_cv),
                            help="Si apre WhatsApp: scegli il gruppo della squadra.")
             if b2.button("🗑️ Elimina questa convocazione", key=f"sq_del_{ev_sel}"):
+                dal_calendario = valore_pulito(riga_ev["numero_gara"]) is not None
                 with db_write() as w_conn:
-                    w_conn.execute("DELETE FROM presenze_evento WHERE evento_id = ?", [ev_sel])
-                    w_conn.execute("DELETE FROM tabellino_giocatori WHERE evento_id = ?", [ev_sel])
-                    w_conn.execute("DELETE FROM eventi_squadra WHERE id = ?", [ev_sel])
-                st.session_state["flash"] = "Convocazione eliminata."
+                    if dal_calendario:  # la partita resta nel calendario: si toglie solo l'elenco dei convocati
+                        w_conn.execute("DELETE FROM presenze_evento WHERE evento_id = ?", [ev_sel])
+                    else:
+                        w_conn.execute("DELETE FROM presenze_evento WHERE evento_id = ?", [ev_sel])
+                        w_conn.execute("DELETE FROM tabellino_giocatori WHERE evento_id = ?", [ev_sel])
+                        w_conn.execute("DELETE FROM eventi_squadra WHERE id = ?", [ev_sel])
+                st.session_state["flash"] = "Convocazione eliminata." + (" La partita resta nel calendario." if dal_calendario else "")
                 st.session_state.pop("sq_conv_sel_id", None)
                 st.rerun()
 
