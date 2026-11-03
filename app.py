@@ -426,6 +426,9 @@ def pulsante_pdf_distinta(distinta_id, chiave):
         st.download_button("📥 Scarica il PDF", st.session_state[stato], file_name=f"distinta_{int(distinta_id)}.pdf",
                            mime="application/pdf", key=chiave + "_dl")
 
+ETICHETTE_ATTIVITA = {"ISTITUZIONALE": "Istituzionale (soci e attività sportiva)", "COMMERCIALE_398": "Commerciale (sponsor e pubblicità)"}
+
+
 def post_journal(conn, data_reg, num_doc, causale, tipo_att, righe):
     """
     Registra una scrittura di Prima Nota a Partita Doppia bilanciata.
@@ -699,167 +702,6 @@ def crediti_residui(etichetta, inizio, fine, tipo):
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)  # senza righe pandas non sa che sono numeri
     df["residuo"] = (df["iniziale"] + df["addebitato"] - df["incassato"]).round(2)
     return df[(df["iniziale"] != 0) | (df["addebitato"] != 0) | (df["incassato"] != 0)].sort_values("denominazione").reset_index(drop=True)
-
-# ---------------------------------------------------------
-# FUNZIONE PARSER ESTRATTO CONTO ROBUSTO (CSV / EXCEL)
-# ---------------------------------------------------------
-def parse_bank_statement(file_bytes, file_name, tipo_fonte="BANCA"):
-    df = None
-    is_excel = file_name.lower().endswith((".xlsx", ".xls"))
-
-    if is_excel:
-        try:
-            excel_file = pd.ExcelFile(io.BytesIO(file_bytes))
-            for sheet in excel_file.sheet_names:
-                df_raw = pd.read_excel(excel_file, sheet_name=sheet, header=None)
-                if not df_raw.empty:
-                    df = df_raw
-                    break
-        except Exception as e:
-            return pd.DataFrame(), f"Errore durante la lettura del file Excel: {e}"
-    else:
-        encodings = ["utf-8", "latin-1", "iso-8859-1", "cp1252"]
-        delimiters = [";", ",", "\t", "|"]
-
-        for enc in encodings:
-            for delim in delimiters:
-                try:
-                    text = file_bytes.decode(enc)
-                    df_raw = pd.read_csv(io.StringIO(text), sep=delim, header=None, dtype=str)
-                    if df_raw.shape[1] >= 2 and len(df_raw) >= 1:
-                        df = df_raw
-                        break
-                except Exception:
-                    continue
-            if df is not None:
-                break
-
-    if df is None or df.empty:
-        return pd.DataFrame(), "Impossibile leggere il file. Verifica che non sia vuoto o corrotto."
-
-    header_idx = None
-    keywords = ["data", "date", "descrizione", "causale", "importo", "accredito", "addebito", "entrate", "uscite", "dare", "avere", "amount"]
-
-    for idx, row in df.iterrows():
-        row_str = " ".join([str(val).lower() for val in row.values if pd.notna(val)])
-        matches = sum(1 for kw in keywords if kw in row_str)
-        if matches >= 2:
-            header_idx = idx
-            break
-
-    if header_idx is not None:
-        headers = [str(val).strip() for val in df.iloc[header_idx].values]
-        df_data = df.iloc[header_idx + 1:].copy()
-        df_data.columns = headers
-    else:
-        df_data = df.copy()
-        df_data.columns = [f"Colonna_{i+1}" for i in range(df_data.shape[1])]
-
-    df_data = df_data.dropna(how="all")
-
-    col_data, col_desc, col_importo, col_entrate, col_uscite, col_comm = None, None, None, None, None, None
-
-    for col in df_data.columns:
-        col_lower = str(col).lower().strip()
-        if not col_data and col_lower in ["data", "date", "data operazione", "data op."]:
-            col_data = col
-        elif not col_desc and any(k in col_lower for k in ["descrizione", "causale", "dettaglio", "causale/descrizione"]):
-            col_desc = col
-        elif not col_comm and col_lower in ["commissione", "tariffa", "fee", "commissioni"]:
-            col_comm = col
-        elif not col_importo and col_lower in ["importo", "ammontare", "totale", "amount"]:
-            col_importo = col
-        elif not col_entrate and col_lower in ["accredito", "entrate", "avere", "credit", "entrata"]:
-            col_entrate = col
-        elif not col_uscite and col_lower in ["addebito", "uscite", "dare", "debit", "uscita"]:
-            col_uscite = col
-
-    remaining_cols = list(df_data.columns)
-    if not col_data and len(remaining_cols) > 0:
-        col_data = remaining_cols[0]
-    if not col_desc and len(remaining_cols) > 1:
-        col_desc = remaining_cols[1]
-    if not col_importo and not (col_entrate or col_uscite) and len(remaining_cols) > 2:
-        col_importo = remaining_cols[2]
-
-    records = []
-
-    def clean_num(val):
-        if pd.isna(val) or val is None:
-            return 0.0
-        # Celle numeriche di Excel: sono già numeri, nessuna conversione del testo
-        if isinstance(val, (int, float)):
-            return float(val)
-        s = str(val).strip().replace("€", "").replace(" ", "")
-        if not s:
-            return 0.0
-        if s.startswith("(") and s.endswith(")"):
-            s = "-" + s[1:-1]
-        elif s.endswith("-"):
-            s = "-" + s[:-1]
-        if "." in s and "," in s:
-            # Il separatore che compare per ultimo è quello dei decimali (1.234,56 oppure 1,234.56)
-            if s.rfind(",") > s.rfind("."):
-                s = s.replace(".", "").replace(",", ".")
-            else:
-                s = s.replace(",", "")
-        elif "," in s:
-            s = s.replace(",", ".")
-        elif s.count(".") > 1 or (s.count(".") == 1 and len(s.split(".")[1]) == 3):
-            # Solo punti delle migliaia: 1.234 oppure 1.234.567 (gli importi hanno 2 decimali)
-            s = s.replace(".", "")
-        try:
-            return float(s)
-        except ValueError:
-            return 0.0
-
-    def clean_date(val):
-        if pd.isna(val) or not val or str(val).strip().lower() in ["nan", "none"]:
-            return None
-        s = str(val).strip()
-        try:
-            parsed = pd.to_datetime(s, dayfirst=True, errors="coerce")
-            if pd.notna(parsed):
-                return parsed.strftime("%Y-%m-%d")
-        except Exception:
-            pass
-        return None
-
-    for _, row in df_data.iterrows():
-        dt_val = clean_date(row.get(col_data, ""))
-        if not dt_val:
-            continue
-
-        desc_val = str(row.get(col_desc, "")).strip() if col_desc else "Movimento Bancario"
-        if not desc_val or desc_val.lower() == "nan":
-            desc_val = "Movimento Generico"
-
-        comm_val = abs(clean_num(row.get(col_comm, 0.0))) if col_comm else 0.0
-
-        if col_importo:
-            imp_val = clean_num(row.get(col_importo, 0.0))
-        elif col_entrate or col_uscite:
-            ent = clean_num(row.get(col_entrate, 0.0)) if col_entrate else 0.0
-            usc = clean_num(row.get(col_uscite, 0.0)) if col_uscite else 0.0
-            imp_val = ent - abs(usc)
-        else:
-            imp_val = 0.0
-
-        if imp_val == 0.0 and desc_val == "Movimento Generico":
-            continue
-
-        netto_val = imp_val - comm_val
-
-        records.append({
-            "data_transazione": dt_val,
-            "descrizione": desc_val,
-            "importo_lordo": round(imp_val, 2),
-            "commissione": round(comm_val, 2),
-            "importo_netto": round(netto_val, 2),
-            "stato_riconciliazione": "DA_RICONCILIARE"
-        })
-
-    return pd.DataFrame(records), None
 
 
 # ---------------------------------------------------------
@@ -3032,7 +2874,7 @@ def pagina_prima_nota():
         for colonna, etichetta, codice in ((m_banca, "🏦 Banca", "10.01.001"), (m_cassa, "💶 Cassa contanti", "10.01.002"), (m_paypal, "🅿️ PayPal", "10.01.003")):
             colonna.metric(etichetta, f"€ {saldi_liquidi.get(codice, 0.0):,.2f}")
         st.caption("Saldi in contabilità alla data di oggi, secondo le registrazioni di prima nota.")
-        with st.expander("➕ Nuova registrazione manuale"):
+        with st.expander("➕ Nuova registrazione manuale", expanded=True):
             df_pdc = leggi_df("SELECT id, codice || ' - ' || nome as conto FROM piano_dei_conti WHERE livello = 3 ORDER BY codice")
 
             pdc_dict = {row["conto"]: int(row["id"]) for _, row in df_pdc.iterrows()}
@@ -3061,7 +2903,7 @@ def pagina_prima_nota():
                         conto_g = h1.selectbox("Tipo di spesa" if tipo_rm.startswith("💸") else "Tipo di entrata", list(costi_ricavi["conto"]), index=None,
                                                placeholder="Scrivi per cercare", key="pn_rm_conto")
                         liquido_g = h2.selectbox("Pagata con" if tipo_rm.startswith("💸") else "Incassato su", list(id_liquidi), key="pn_rm_liq")
-                    ambito_g = st.selectbox("Ambito attività", ["ISTITUZIONALE", "COMMERCIALE_398"], key="pn_rm_ambito",
+                    ambito_g = st.selectbox("Tipo di attività", list(ETICHETTE_ATTIVITA), format_func=ETICHETTE_ATTIVITA.get, key="pn_rm_ambito",
                                             help="Istituzionale: attività dei soci (quote, spese sportive). Commerciale: sponsorizzazioni e pubblicità (regime 398/91).")
                     if st.form_submit_button("Salva la registrazione"):
                         if tipo_rm.startswith("🔁"):
@@ -3095,7 +2937,7 @@ def pagina_prima_nota():
                     num_doc = col2.text_input("N. Documento / Riferimento", value="Scontrino / Bonifico")
                     causale = col3.text_input("Causale Operazione", value="Pagamento affitto campo / Acquisto materiale")
 
-                    tipo_att = st.selectbox("Ambito Attività", ["ISTITUZIONALE", "COMMERCIALE_398"])
+                    tipo_att = st.selectbox("Tipo di attività", list(ETICHETTE_ATTIVITA), format_func=ETICHETTE_ATTIVITA.get)
 
                     col_d, col_a = st.columns(2)
                     conto_dare = col_d.selectbox("Conto DARE (Costo da addebitare o Cassa/Banca che riceve)", list(pdc_dict.keys()), key="dare_acc",
@@ -3193,7 +3035,7 @@ def pagina_prima_nota():
                             doc_m = m2.text_input("Documento", value=str(testata["numero_documento"] or ""), key=km + "doc")
                             causale_m = m3.text_input("Causale", value=str(testata["causale"] or ""), key=km + "causale")
                             tipi_att = ["ISTITUZIONALE", "COMMERCIALE_398"]
-                            att_m = m4.selectbox("Attività", tipi_att, index=tipi_att.index(testata["tipo_attivita"]) if testata["tipo_attivita"] in tipi_att else 0,
+                            att_m = m4.selectbox("Tipo di attività", tipi_att, format_func=ETICHETTE_ATTIVITA.get, index=tipi_att.index(testata["tipo_attivita"]) if testata["tipo_attivita"] in tipi_att else 0,
                                                  key=km + "att")
                             righe_input = []
                             esistenti = list(df_righe_mod.itertuples())
@@ -3260,13 +3102,13 @@ def pagina_prima_nota():
                             except Exception as ex_del:
                                 st.error(f"Errore durante l'eliminazione: {ex_del}")
 
-        with st.expander("💳 Segna come pagata una spesa da pagare"):
+        with st.expander("💳 Segna come pagata una spesa da pagare", expanded=True):
             df_dp = leggi_df("SELECT f.id, f.data_doc, f.numero_doc, f.totale, a.denominazione AS fornitore FROM fatture_passive f "
                              "JOIN anagrafiche a ON a.id = f.fornitore_id WHERE f.data_pagamento IS NULL ORDER BY f.data_doc, f.id")
             if df_dp.empty:
                 st.info("Non ci sono spese da pagare.")
             else:
-                st.caption("Il pagamento chiude il debito verso il fornitore e compare qui sotto come nuova registrazione.")
+                st.caption("Il pagamento chiude il debito verso il fornitore e compare qui sotto come nuova registrazione. Lo stesso pagamento si può registrare anche da «Spese e fornitori».")
                 opz_dp = {f"{r.fornitore} · {r.numero_doc or 's.n.'} del {pd.to_datetime(r.data_doc).strftime('%d/%m/%Y')} · € {float(r.totale):,.2f}": int(r.id)
                           for r in df_dp.itertuples()}
                 with st.form("pn_paga_spesa"):
@@ -4289,6 +4131,7 @@ def pagina_spese():
     da_pagare = df_sp[df_sp["data_pagamento"].isna()] if not df_sp.empty else df_sp
     if not da_pagare.empty:
         with st.expander(f"⏳ Spese da pagare: {len(da_pagare)}, totale € {da_pagare['totale'].sum():,.2f}", expanded=True):
+            st.caption("Il pagamento si può registrare anche dalla «Prima nota».")
             opz_pag = {f"{r.fornitore} · {r.numero_doc or 's.n.'} del {pd.to_datetime(r.data_doc).strftime('%d/%m/%Y')} · € {float(r.totale):,.2f}"
                        + (f" · scade il {pd.to_datetime(r.data_scadenza).strftime('%d/%m/%Y')}" if pd.notna(r.data_scadenza) and r.data_scadenza else ""): int(r.id)
                        for r in da_pagare.itertuples()}
@@ -5156,26 +4999,26 @@ if not utenti.puo_scrivere(UTENTE["ruolo"]):
     st.info("👁️ Profilo di sola consultazione: puoi vedere i dati ma non salvare modifiche.")
 
 MENU = {
-    "Generale": [
+    "🏠 Generale": [
         (pagina_dashboard, "Dashboard e scadenze", "📊", "dashboard"),
     ] + ([(pagina_account, "Il mio account", "👤", "account")] if ACCESSI_PERSONALI else []),
-    "Tesserati e squadra": [
+    "👥 Tesserati e squadra": [
         (pagina_tesseramento, "Nuovo tesseramento", "📝", "tesseramento"),
         (pagina_soci, "Soci, atleti e dirigenti", "🏃", "soci"),
         (pagina_distinte, "Distinte di gara", "📋", "distinte"),
         (pagina_squadra, "Convocazioni e presenze", "📣", "convocazioni"),
     ],
-    "Incassi e pagamenti": [
+    "💶 Incassi e pagamenti": [
         (pagina_ricevute, "Ricevute e quote", "📜", "ricevute"),
         (pagina_sponsor, "Sponsor e pubblicità", "🏢", "sponsor"),
         (pagina_spese, "Spese e fornitori", "🧾", "spese"),
         (pagina_lavoro_sportivo, "Collaboratori e rimborsi", "⚽", "collaboratori"),
     ],
-    "Contabilità": [
+    "📚 Contabilità": [
         (pagina_prima_nota, "Prima nota e rendiconto", "📖", "prima-nota"),
         (pagina_preventivo, "Preventivo e consuntivo", "🎯", "preventivo"),
     ],
-    "Impostazioni": [
+    "⚙️ Impostazioni": [
         (pagina_parametri, "Parametri stagione", "⚙️", "parametri"),
         (pagina_piano_conti, "Piano dei conti", "🌳", "piano-dei-conti"),
         (pagina_backup, "Backup ed esportazioni", "💾", "backup"),

@@ -13,7 +13,6 @@ VOCI = [
     ("AFFILIAZIONE", "Affiliazione della società", "SOCIETA"),
 ]
 ETICHETTE = {codice: etichetta for codice, etichetta, _ in VOCI}
-AMBITO = {codice: ambito for codice, _, ambito in VOCI}
 # Conto di prima nota di ogni voce: la cauzione è un deposito da restituire, non un costo
 CONTO_VOCE = {"ISCRIZIONE_CAMPIONATO": "40.01.006", "CAUZIONE": "10.02.003"}
 CONTO_TESSERAMENTI = "40.01.002"

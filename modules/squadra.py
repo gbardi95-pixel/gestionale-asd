@@ -1,7 +1,6 @@
 """Convocazioni per le partite e presenze agli allenamenti: testo della convocazione e statistiche di presenza."""
 import pandas as pd
 
-STATI = {"CONVOCATO": "Convocato", "PRESENTE": "Presente", "ASSENTE": "Assente", "GIUSTIFICATO": "Assente giustificato"}
 
 
 def _data_it(data):
