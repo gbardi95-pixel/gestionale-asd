@@ -2256,7 +2256,8 @@ def pagina_ricevute():
             next_num = prossimo_numero("ricevute_istituzionali", "numero_ricevuta", "data_emissione", anno_ric)
 
             num_ric = col2.text_input("Numero Ricevuta (Progressivo automatico)", value=f"{next_num}/{anno_ric}")
-            socio_sel = col3.selectbox("Socio / Tesserato / Versante", list(soci_dict.keys()))
+            socio_sel = col3.selectbox("Socio / Tesserato / Versante", list(soci_dict.keys()), index=None,
+                                       placeholder="Scrivi il nome per cercare o scegli dall'elenco")
 
             c4, c5, c6 = st.columns(3)
             tipo_causale = c4.selectbox("Tipologia", ["Quota Associativa Annua", "Quota Iscrizione e Frequenza Campionato", "Contributo Istituzionale Straordinario",
@@ -2281,6 +2282,9 @@ def pagina_ricevute():
                      "Togli la spunta se la somma in più è un errore da restituire o riguarda un'altra persona.")
 
             if st.form_submit_button("Emetti Ricevuta e Registra in Prima Nota"):
+                if socio_sel is None:
+                    st.error("Scegli la persona a cui intestare la ricevuta.")
+                    st.stop()
                 socio_altrove_ric = leggi_df("SELECT COALESCE(MAX(socio_altra_societa), 0) AS s FROM tesserati_calcio WHERE anagrafica_id = ?",
                                              [int(soci_dict[socio_sel])])["s"].iloc[0]
                 if pregresso and tipo_causale == CAUSALE_EROGAZIONE:
@@ -2599,13 +2603,16 @@ def pagina_sponsor():
             next_fat_num = prossimo_numero("fatture_sponsor_398", "numero_fattura", "data_fattura", anno_fat)
 
             num_fat = col1.text_input("Numero Fattura", value=f"{next_fat_num}/{anno_fat}/398")
-            spon_sel = col3.selectbox("Azienda Sponsor", list(spon_dict.keys()))
+            spon_sel = col3.selectbox("Azienda Sponsor", list(spon_dict.keys()), index=None, placeholder="Scrivi il nome per cercare o scegli dall'elenco")
 
             oggetto = st.text_input("Oggetto del Contratto", value="Sponsorizzazione e cartellonistica campo da gioco Campionato Calcio a 11")
             imponibile = st.number_input("Imponibile (€)", min_value=0.01, step=100.0)
             aliquota = 22.0
 
             if st.form_submit_button("Registra Fattura 398/91 in Archivio e Registro"):
+                if spon_sel is None:
+                    st.error("Scegli l'azienda sponsor.")
+                    st.stop()
                 if imponibile > 0:
                     try:
                         iva_totale = round(imponibile * (aliquota / 100), 2)
@@ -2642,12 +2649,15 @@ def pagina_sponsor():
             st.caption(f"Esercizio {etich_ec}: credito di apertura + fatture emesse nell'esercizio − incassi registrati.")
         with st.form("incasso_sponsor", clear_on_submit=True):
             i1, i2, i3, i4 = st.columns(4)
-            spon_inc = i1.selectbox("Sponsor", list(spon_dict.keys()), key="inc_sponsor")
+            spon_inc = i1.selectbox("Sponsor", list(spon_dict.keys()), key="inc_sponsor", index=None, placeholder="Scrivi per cercare")
             data_inc = i2.date_input("Data incasso", format="DD/MM/YYYY")
             importo_inc = i3.number_input("Importo incassato (€)", min_value=0.01, step=50.0)
             modo_inc = i4.selectbox("Modalità", ["BONIFICO", "POS", "PAYPAL", "CONTANTI"])
             rif_inc = st.text_input("Riferimento (es. saldo fattura n. ...)")
             if st.form_submit_button("Registra incasso"):
+                if spon_inc is None:
+                    st.error("Scegli lo sponsor.")
+                    st.stop()
                 try:
                     with db_write() as w_conn:
                         acc_fin = get_conto_id(w_conn, {"BONIFICO": "10.01.001", "POS": "10.01.001", "PAYPAL": "10.01.003"}.get(modo_inc, "10.01.002"))
@@ -2788,8 +2798,8 @@ def pagina_lavoro_sportivo():
             st.caption("Contributi e ritenute sono una stima per avere un'idea dei costi: vanno verificati con il consulente del lavoro.")
 
             with st.form("nuovo_compenso", clear_on_submit=True):
-                staff_sel = st.selectbox("Seleziona Collaboratore Sportivo", list(staff_dict.keys()),
-                                         help="Clicca e scrivi una parte del nome per filtrare l'elenco.")
+                staff_sel = st.selectbox("Seleziona Collaboratore Sportivo", list(staff_dict.keys()), index=None,
+                                         placeholder="Scrivi il nome per cercare o scegli dall'elenco")
                 c1, c2, c3 = st.columns(3)
                 data_erog = c1.date_input("Data Erogazione", format="DD/MM/YYYY")
                 anno_erog = str(data_erog.year)
@@ -2799,6 +2809,9 @@ def pagina_lavoro_sportivo():
                                           help="Il compenso viene registrato anche in prima nota: costo lordo, netto pagato e ritenute da versare.")
 
                 if st.form_submit_button("Eroga Compenso e Calcola Franchigie"):
+                    if staff_sel is None:
+                        st.error("Scegli il collaboratore.")
+                        st.stop()
                     coll_sel = staff_righe[int(staff_dict[staff_sel])] if staff_sel else None
                     if coll_sel is not None and coll_sel.tipo_contratto == "VOLONTARIO_RIMBORSO":
                         st.error("Ai volontari non si pagano compensi, solo rimborsi delle spese documentate (scheda «🚗 Rimborsi trasferta»). "
@@ -2929,8 +2942,8 @@ def pagina_lavoro_sportivo():
         if not df_anag_sport.empty:
             a_dict = {row["denominazione"]: int(row["id"]) for _, row in df_anag_sport.iterrows()}
             with st.form("nuovo_rimborso", clear_on_submit=True):
-                atleta_sel = st.selectbox("Atleta / Dirigente in Trasferta", list(a_dict.keys()),
-                                          help="Clicca e scrivi una parte del nome per filtrare l'elenco.")
+                atleta_sel = st.selectbox("Atleta / Dirigente in Trasferta", list(a_dict.keys()), index=None,
+                                          placeholder="Scrivi il nome per cercare o scegli dall'elenco")
 
                 r1, r2, r3 = st.columns(3)
                 data_partita = r1.date_input("Data Partita di Campionato")
@@ -2943,6 +2956,9 @@ def pagina_lavoro_sportivo():
                 spese_doc = r6.number_input("Spese Piè di Lista (Autostrada/Pasto €)", min_value=0.0)
 
                 if st.form_submit_button("Registra Distinta Rimborso Trasferta"):
+                    if atleta_sel is None:
+                        st.error("Scegli la persona che ha fatto la trasferta.")
+                        st.stop()
                     tot_rimborso = (km * tariffa_aci) + spese_doc
                     if tot_rimborso > 0:
                         try:
@@ -2974,6 +2990,11 @@ def pagina_prima_nota():
         tab_rendiconto, tab_apertura = st.tabs(["🏛️ Rendiconto economico finanziario", "📂 Apertura e chiusura esercizio"])
 
     if sezione_pn == "movimenti":
+        saldi_liquidi = saldi_conti_prima_del(datetime.date.today() + datetime.timedelta(days=1))
+        m_banca, m_cassa, m_paypal = st.columns(3)
+        for colonna, etichetta, codice in ((m_banca, "🏦 Banca", "10.01.001"), (m_cassa, "💶 Cassa contanti", "10.01.002"), (m_paypal, "🅿️ PayPal", "10.01.003")):
+            colonna.metric(etichetta, f"€ {saldi_liquidi.get(codice, 0.0):,.2f}")
+        st.caption("Saldi in contabilità alla data di oggi, secondo le registrazioni di prima nota.")
         with st.expander("➕ Nuova Registrazione Manuale (Uscite / Spese / Incassi Generici)"):
             df_pdc = leggi_df("SELECT id, codice || ' - ' || nome as conto FROM piano_dei_conti WHERE livello = 3 ORDER BY codice")
 
@@ -2988,14 +3009,18 @@ def pagina_prima_nota():
                 tipo_att = st.selectbox("Ambito Attività", ["ISTITUZIONALE", "COMMERCIALE_398"])
 
                 col_d, col_a = st.columns(2)
-                conto_dare = col_d.selectbox("Conto DARE (Costo da addebitare o Cassa/Banca che riceve)", list(pdc_dict.keys()), key="dare_acc")
+                conto_dare = col_d.selectbox("Conto DARE (Costo da addebitare o Cassa/Banca che riceve)", list(pdc_dict.keys()), key="dare_acc",
+                                             index=None, placeholder="Scrivi per cercare il conto")
                 importo_dare = col_d.number_input("Importo DARE (€)", min_value=0.01, step=10.0, key="dare_val")
 
-                conto_avere = col_a.selectbox("Conto AVERE (Cassa/Banca da cui si paga o Ricavo)", list(pdc_dict.keys()), key="avere_acc")
+                conto_avere = col_a.selectbox("Conto AVERE (Cassa/Banca da cui si paga o Ricavo)", list(pdc_dict.keys()), key="avere_acc",
+                                              index=None, placeholder="Scrivi per cercare il conto")
                 importo_avere = col_a.number_input("Importo AVERE (€)", min_value=0.01, step=10.0, key="avere_val")
 
                 if st.form_submit_button("Salva Scrittura in Prima Nota"):
-                    if conto_dare == conto_avere:
+                    if conto_dare is None or conto_avere is None:
+                        st.error("Scegli sia il conto DARE sia il conto AVERE.")
+                    elif conto_dare == conto_avere:
                         st.error("I conti DARE e AVERE non possono essere identici.")
                     elif round(importo_dare, 2) != round(importo_avere, 2):
                         st.error("Gli importi DARE e AVERE devono essere perfettamente uguali.")
@@ -3146,7 +3171,34 @@ def pagina_prima_nota():
                             except Exception as ex_del:
                                 st.error(f"Errore durante l'eliminazione: {ex_del}")
 
+        with st.expander("💳 Segna come pagata una spesa da pagare"):
+            df_dp = leggi_df("SELECT f.id, f.data_doc, f.numero_doc, f.totale, a.denominazione AS fornitore FROM fatture_passive f "
+                             "JOIN anagrafiche a ON a.id = f.fornitore_id WHERE f.data_pagamento IS NULL ORDER BY f.data_doc, f.id")
+            if df_dp.empty:
+                st.info("Non ci sono spese da pagare.")
+            else:
+                st.caption("Il pagamento chiude il debito verso il fornitore e compare qui sotto come nuova registrazione.")
+                opz_dp = {f"{r.fornitore} · {r.numero_doc or 's.n.'} del {pd.to_datetime(r.data_doc).strftime('%d/%m/%Y')} · € {float(r.totale):,.2f}": int(r.id)
+                          for r in df_dp.itertuples()}
+                with st.form("pn_paga_spesa"):
+                    p1, p2, p3 = st.columns([3, 1, 1])
+                    sel_dp = p1.selectbox("Spesa", list(opz_dp))
+                    data_dp = p2.date_input("Pagata il", format="DD/MM/YYYY")
+                    modo_dp = p3.selectbox("Con", list(CONTI_PAGAMENTO_SPESE))
+                    if st.form_submit_button("✅ Registra il pagamento"):
+                        riga_dp = df_dp[df_dp["id"] == opz_dp[sel_dp]].iloc[0]
+                        try:
+                            with db_write() as w_conn:
+                                registra_pagamento_spesa(w_conn, riga_dp, data_dp, modo_dp)
+                            st.session_state["flash"] = f"Pagamento a {riga_dp['fornitore']} registrato."
+                            st.rerun()
+                        except Exception as ex_dp:
+                            st.error(f"Errore nella registrazione del pagamento: {ex_dp}")
+
         st.divider()
+        conti_filtro =leggi_df("SELECT id, codice || ' - ' || nome AS conto FROM piano_dei_conti WHERE livello = 3 ORDER BY codice")
+        scelta_conto = st.selectbox("Mostra solo le registrazioni di un conto", ["Tutti i conti"] + list(conti_filtro["conto"]), key="pn_filtro_conto")
+        id_conto_filtro = None if scelta_conto == "Tutti i conti" else int(conti_filtro.loc[conti_filtro["conto"] == scelta_conto, "id"].iloc[0])
         df_pn = leggi_df(
             """
             SELECT m.id as 'N° reg.', m.data_registrazione as Data, m.numero_documento as Doc, m.causale as Causale,
@@ -3155,8 +3207,18 @@ def pagina_prima_nota():
             FROM righe_prima_nota r
             JOIN movimenti_prima_nota m ON r.movimento_id = m.id
             JOIN piano_dei_conti p ON r.sottoconto_id = p.id
-            ORDER BY m.id DESC, r.id ASC LIMIT 500
-            """)
+            WHERE ? IS NULL OR m.id IN (SELECT movimento_id FROM righe_prima_nota WHERE sottoconto_id = ?)
+            ORDER BY m.data_registrazione DESC, m.id DESC, r.id ASC LIMIT 1500
+            """, [id_conto_filtro, id_conto_filtro])
+        coll_sp = leggi_df(
+            "SELECT f.movimento_id AS mov, 'Spesa' AS tipo, a.denominazione AS fornitore, f.numero_doc, f.data_pagamento FROM fatture_passive f "
+            "JOIN anagrafiche a ON a.id = f.fornitore_id UNION ALL "
+            "SELECT f.movimento_pagamento_id, 'Pagamento', a.denominazione, f.numero_doc, f.data_pagamento FROM fatture_passive f "
+            "JOIN anagrafiche a ON a.id = f.fornitore_id WHERE f.movimento_pagamento_id IS NOT NULL AND f.movimento_pagamento_id <> f.movimento_id")
+        etich_coll = {int(r.mov): f"{r.tipo}: {r.fornitore} · {r.numero_doc or 's.n.'}" + (" · da pagare" if r.tipo == "Spesa" and pd.isna(r.data_pagamento) else "")
+                      for r in coll_sp.itertuples() if pd.notna(r.mov)}
+        df_pn.insert(4, "Spesa collegata", df_pn["N° reg."].map(etich_coll).fillna(""))
+        st.caption("Le registrazioni sono in ordine di data, dalla più recente." + (f" Mostro solo quelle che toccano «{scelta_conto}»." if id_conto_filtro else ""))
         # Vista semplice: una riga per registrazione con i conti movimentati; la partita doppia resta a un clic
         vista_pn = st.segmented_control("Vista del giornale", ["Una riga per registrazione", "Partita doppia (dare e avere)"],
                                         default="Una riga per registrazione", key="pn_vista") or "Una riga per registrazione"
@@ -3166,7 +3228,7 @@ def pagina_prima_nota():
             conti_lato = lambda g, col: " + ".join(g.loc[g[col] > 0, "Sottoconto"].str.split(" - ", n=1).str[-1])
             st.dataframe(pd.DataFrame([{
                 "N° reg.": n, "Data": pd.to_datetime(g["Data"].iloc[0], errors="coerce").strftime("%d/%m/%Y"), "Doc": g["Doc"].iloc[0],
-                "Causale": g["Causale"].iloc[0], "Importo (€)": round(float(g["Dare (€)"].sum()), 2),
+                "Causale": g["Causale"].iloc[0], "Spesa collegata": g["Spesa collegata"].iloc[0], "Importo (€)": round(float(g["Dare (€)"].sum()), 2),
                 "Va a (dare)": conti_lato(g, "Dare (€)"), "Viene da (avere)": conti_lato(g, "Avere (€)")}
                 for n, g in df_pn.groupby("N° reg.", sort=False)]), width="stretch", hide_index=True)
 
@@ -3926,6 +3988,16 @@ def registra_spesa(w_conn, fornitore_id, nome_fornitore, numero, data_doc, descr
          modo_pagamento, str(data_doc) if modo_pagamento else None, mov, mov if modo_pagamento else None, xml_base64, data_scadenza])
     return mov
 
+def registra_pagamento_spesa(w_conn, riga, data_pagamento, modo):
+    """Chiude il debito verso il fornitore: scrittura di pagamento in prima nota e spesa segnata come pagata.
+    riga: spesa da pagare con id, numero_doc, fornitore, totale; modo: chiave di CONTI_PAGAMENTO."""
+    mov_pag = post_journal(w_conn, data_pagamento, riga["numero_doc"] or "Spesa", f"Pagamento a {riga['fornitore']}", "ISTITUZIONALE",
+                           [(get_conto_id(w_conn, "20.01.001"), "Chiusura debito verso fornitore", float(riga["totale"]), 0.0),
+                            (get_conto_id(w_conn, CONTI_PAGAMENTO_SPESE[modo]), "Pagamento", 0.0, float(riga["totale"]))])
+    w_conn.execute("UPDATE fatture_passive SET modalita_pagamento = ?, data_pagamento = ?, movimento_pagamento_id = ? WHERE id = ?",
+                   [modo, str(data_pagamento), mov_pag, int(riga["id"])])
+    return mov_pag
+
 def registra_fattura_sponsor(w_conn, numero, data_fat, sponsor_id, nome_sponsor, oggetto, imponibile, aliquota, iva_totale, totale, xml_base64=None):
     """Fattura emessa allo sponsor (regime 398/91): credito per il totale, ricavo per l'imponibile, IVA a debito."""
     iva_da_versare_50 = round(iva_totale * 0.50, 2)
@@ -4143,11 +4215,7 @@ def pagina_spese():
                     riga_sp = da_pagare[da_pagare["id"] == opz_pag[sp_sel]].iloc[0]
                     try:
                         with db_write() as w_conn:
-                            mov_pag = post_journal(w_conn, data_pag_sp, riga_sp["numero_doc"] or "Spesa", f"Pagamento a {riga_sp['fornitore']}", "ISTITUZIONALE",
-                                                   [(get_conto_id(w_conn, "20.01.001"), "Chiusura debito verso fornitore", float(riga_sp["totale"]), 0.0),
-                                                    (get_conto_id(w_conn, CONTI_PAGAMENTO[modo_pag_sp]), "Pagamento", 0.0, float(riga_sp["totale"]))])
-                            w_conn.execute("UPDATE fatture_passive SET modalita_pagamento = ?, data_pagamento = ?, movimento_pagamento_id = ? WHERE id = ?",
-                                           [modo_pag_sp, str(data_pag_sp), mov_pag, int(riga_sp["id"])])
+                            registra_pagamento_spesa(w_conn, riga_sp, data_pag_sp, modo_pag_sp)
                         st.session_state["flash"] = f"Pagamento a {riga_sp['fornitore']} registrato."
                         st.rerun()
                     except Exception as ex_pag:

@@ -11,6 +11,7 @@ print("conti nuovi:", c.execute("SELECT codice, nome FROM piano_dei_conti WHERE 
 at = nuovo(f, "pagina_lavoro_sportivo")
 anno = datetime.date.today().year
 def compenso(data, lordo, con="BONIFICO"):
+    campo(at.selectbox, "Seleziona Collaboratore").set_value(campo(at.selectbox, "Seleziona Collaboratore").options[0])
     campo(at.date_input, "Data Erogazione").set_value(data)
     campo(at.number_input, "Importo Lordo").set_value(lordo)
     campo(at.selectbox, "Netto pagato con").set_value(con)

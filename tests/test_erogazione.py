@@ -8,6 +8,7 @@ c.execute("INSERT INTO tesserati_calcio (anagrafica_id, numero_tessera, categori
 c.commit()
 def emetti(tipo, importo, pregresso=False):
     at = nuovo(f, "pagina_ricevute")
+    campo(at.selectbox, "Socio").set_value(campo(at.selectbox, "Socio").options[0])
     campo(at.selectbox, "Tipologia").set_value(tipo)
     campo(at.number_input, "Importo Incassato").set_value(importo)
     if pregresso: campo(at.checkbox, "Incasso di una quota").check()

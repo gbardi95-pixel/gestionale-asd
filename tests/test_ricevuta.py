@@ -16,6 +16,7 @@ bottone(at, "💾 Salva i dati dell'associazione").click().run()
 assert not at.exception, at.exception
 print("impostazioni:", c.execute("SELECT chiave, valore FROM impostazioni WHERE chiave LIKE 'societa_%' ORDER BY chiave").fetchall())
 # ricevuta pagata dal genitore
+campo(at.selectbox, "Socio").set_value(campo(at.selectbox, "Socio").options[0])
 campo(at.number_input, "Importo Incassato").set_value(150.0)
 campo(at.text_input, "Pagato da").set_value("Rossi Mario")
 campo(at.text_input, "Codice fiscale di chi ha pagato").set_value("rssmra80a01h501u")
