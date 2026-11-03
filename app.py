@@ -937,6 +937,37 @@ def pagina_dashboard():
                  + scadenze.scadenze_mensili(accrediti("20.02.004"), -saldi_sc.get("20.02.004", 0.0), "Contributi INPS sui compensi")
                  + scadenze.scadenze_annuali(oggi_sc.year, *att_prec) + scadenze.scadenze_annuali(oggi_sc.year + 1, *att_corr))
     vicine_sc = scadenze.da_mostrare(elenco_sc, oggi_sc)
+    # Cose da fare oggi: poche voci con il collegamento alla pagina giusta (solo quelle che il profilo può aprire)
+    da_fare = []
+    sp_aperte = leggi_df("SELECT COUNT(*) AS n, COALESCE(SUM(totale), 0) AS tot, "
+                         "COALESCE(SUM(CASE WHEN data_scadenza IS NOT NULL AND data_scadenza < ? THEN 1 ELSE 0 END), 0) AS scadute "
+                         "FROM fatture_passive WHERE data_pagamento IS NULL", [today]).iloc[0]
+    if int(sp_aperte["n"]):
+        da_fare.append(("spese", f"💳 {int(sp_aperte['n'])} spese da pagare, € {float(sp_aperte['tot']):,.2f}"
+                        + (f" ({int(sp_aperte['scadute'])} già scadute)" if int(sp_aperte["scadute"]) else "")))
+    amm_aperte = int(leggi_df("SELECT COUNT(*) AS n FROM provvedimenti_disciplinari WHERE tipo = 'AMMENDA' AND spesa_id IS NULL AND importo IS NOT NULL")["n"].iloc[0])
+    if amm_aperte:
+        da_fare.append(("convocazioni", f"⚖️ {amm_aperte} ammende da registrare come debito (scheda Disciplina)"))
+    if not df_cert_alert.empty:
+        da_fare.append(("soci", f"🚑 {len(df_cert_alert)} certificati medici mancanti, scaduti o in scadenza (elenco più sotto)"))
+    senza_conv = leggi_df(
+        "SELECT e.data, e.avversario FROM eventi_squadra e WHERE e.tipo = 'PARTITA' AND e.data BETWEEN ? AND ? "
+        "AND NOT EXISTS (SELECT 1 FROM presenze_evento p WHERE p.evento_id = e.id AND p.stato = 'CONVOCATO') ORDER BY e.data LIMIT 1",
+        [today, (datetime.date.today() + datetime.timedelta(days=14)).strftime("%Y-%m-%d")])
+    if not senza_conv.empty:
+        r_sc = senza_conv.iloc[0]
+        da_fare.append(("convocazioni", f"📣 Partita del {pd.to_datetime(r_sc['data']).strftime('%d/%m/%Y')}"
+                        + (f" contro {r_sc['avversario']}" if r_sc["avversario"] else "") + " senza convocazione"))
+    st.markdown("### ✅ Da fare")
+    if not da_fare:
+        st.success("Niente di urgente: nessuna spesa da pagare, ammenda da registrare o certificato da sistemare.")
+    for url_df, testo_df in da_fare:
+        c_testo, c_link = st.columns([4, 1])
+        c_testo.markdown(testo_df)
+        if url_df in pagine_menu:
+            c_link.page_link(pagine_menu[url_df], label="Apri →")
+    st.divider()
+
     st.markdown("### 🗓️ Scadenze fiscali")
     if not vicine_sc:
         st.success(f"Nessuna scadenza fiscale nei prossimi {scadenze.GIORNI_PREAVVISO} giorni.")
@@ -1358,211 +1389,214 @@ def pagina_soci():
 
         if not df_people.empty:
             people_dict = {f"{row['denominazione']} (CF: {row['codice_fiscale'] or 'N.D.'})": int(row['id']) for _, row in df_people.iterrows()}
-            selected_label = st.selectbox("Seleziona Persona da Modificare", list(people_dict.keys()),
-                                          help="Clicca e scrivi una parte del nome o del codice fiscale per filtrare l'elenco.")
-            selected_anag_id = int(people_dict[selected_label])
+            selected_label = st.selectbox("Seleziona Persona da Modificare", list(people_dict.keys()), index=None,
+                                          placeholder="Scrivi il nome o il codice fiscale per cercare")
+            selected_anag_id = int(people_dict[selected_label]) if selected_label else None
+            if selected_anag_id is None:
+                st.info("Scegli la persona da modificare.")
+            else:
 
-            df_a = leggi_df("SELECT denominazione, codice_fiscale, tipo_documento, numero_documento, telefono, email, indirizzo, cap, comune, provincia "
-                            "FROM anagrafiche WHERE id = ?", [selected_anag_id])
-            df_t = leggi_df(
-                "SELECT numero_tessera, numero_scheda_attivita, tipo_tessera, numero_maglia, categoria, ruolo, quota_stagionale, stato, gioca, socio_altra_societa, "
-                "data_tesseramento, data_uscita "
-                "FROM tesserati_calcio WHERE anagrafica_id = ?", [selected_anag_id])
-            df_c = leggi_df("SELECT data_rilascio, data_scadenza, medico_certificatore FROM certificati_medici WHERE anagrafica_id = ? ORDER BY data_scadenza DESC", [selected_anag_id])
+                df_a = leggi_df("SELECT denominazione, codice_fiscale, tipo_documento, numero_documento, telefono, email, indirizzo, cap, comune, provincia "
+                                "FROM anagrafiche WHERE id = ?", [selected_anag_id])
+                df_t = leggi_df(
+                    "SELECT numero_tessera, numero_scheda_attivita, tipo_tessera, numero_maglia, categoria, ruolo, quota_stagionale, stato, gioca, socio_altra_societa, "
+                    "data_tesseramento, data_uscita "
+                    "FROM tesserati_calcio WHERE anagrafica_id = ?", [selected_anag_id])
+                df_c = leggi_df("SELECT data_rilascio, data_scadenza, medico_certificatore FROM certificati_medici WHERE anagrafica_id = ? ORDER BY data_scadenza DESC", [selected_anag_id])
 
-            cur_nome = first_val(df_a, "denominazione")
-            cur_cf = first_val(df_a, "codice_fiscale")
-            cur_tipo_doc = first_val(df_a, "tipo_documento")
-            cur_num_doc = first_val(df_a, "numero_documento")
-            cur_tel = first_val(df_a, "telefono")
-            cur_email = first_val(df_a, "email")
-            cur_indirizzo = first_val(df_a, "indirizzo")
-            cur_cap = first_val(df_a, "cap")
-            cur_comune = first_val(df_a, "comune")
-            cur_prov = first_val(df_a, "provincia")
+                cur_nome = first_val(df_a, "denominazione")
+                cur_cf = first_val(df_a, "codice_fiscale")
+                cur_tipo_doc = first_val(df_a, "tipo_documento")
+                cur_num_doc = first_val(df_a, "numero_documento")
+                cur_tel = first_val(df_a, "telefono")
+                cur_email = first_val(df_a, "email")
+                cur_indirizzo = first_val(df_a, "indirizzo")
+                cur_cap = first_val(df_a, "cap")
+                cur_comune = first_val(df_a, "comune")
+                cur_prov = first_val(df_a, "provincia")
 
-            has_tess = not df_t.empty
-            cur_matricola = first_val(df_t, "numero_tessera")
-            cur_scheda = first_val(df_t, "numero_scheda_attivita")
-            cur_tipo_tess = first_val(df_t, "tipo_tessera")
-            cur_maglia = int(first_val(df_t, "numero_maglia", 0) or 0)
-            cur_cat_raw = first_val(df_t, "categoria", "STAFF")
-            cur_cat = cur_cat_raw if cur_cat_raw in CATEGORIE_LISTA else "STAFF"
-            cur_role = first_val(df_t, "ruolo", "Dirigente")
-            cur_quota = float(first_val(df_t, "quota_stagionale", 0.0))
-            cur_stato = first_val(df_t, "stato", "ATTIVO")
-            cur_gioca = bool(int(first_val(df_t, "gioca", 1)))
-            cur_socio_altrove = bool(int(first_val(df_t, "socio_altra_societa", 0) or 0))
-            cur_ammissione = libro_soci.data_iso(first_val(df_t, "data_tesseramento"))
-            cur_uscita = libro_soci.data_iso(first_val(df_t, "data_uscita"))
+                has_tess = not df_t.empty
+                cur_matricola = first_val(df_t, "numero_tessera")
+                cur_scheda = first_val(df_t, "numero_scheda_attivita")
+                cur_tipo_tess = first_val(df_t, "tipo_tessera")
+                cur_maglia = int(first_val(df_t, "numero_maglia", 0) or 0)
+                cur_cat_raw = first_val(df_t, "categoria", "STAFF")
+                cur_cat = cur_cat_raw if cur_cat_raw in CATEGORIE_LISTA else "STAFF"
+                cur_role = first_val(df_t, "ruolo", "Dirigente")
+                cur_quota = float(first_val(df_t, "quota_stagionale", 0.0))
+                cur_stato = first_val(df_t, "stato", "ATTIVO")
+                cur_gioca = bool(int(first_val(df_t, "gioca", 1)))
+                cur_socio_altrove = bool(int(first_val(df_t, "socio_altra_societa", 0) or 0))
+                cur_ammissione = libro_soci.data_iso(first_val(df_t, "data_tesseramento"))
+                cur_uscita = libro_soci.data_iso(first_val(df_t, "data_uscita"))
 
-            has_cert = not df_c.empty
-            cur_ril = first_val(df_c, "data_rilascio")
-            cur_scad = first_val(df_c, "data_scadenza")
-            cur_medico = first_val(df_c, "medico_certificatore")
+                has_cert = not df_c.empty
+                cur_ril = first_val(df_c, "data_rilascio")
+                cur_scad = first_val(df_c, "data_scadenza")
+                cur_medico = first_val(df_c, "medico_certificatore")
 
-            with st.form("form_edit_anagrafica"):
-                st.markdown(f"#### Scheda di: **{cur_nome}**")
-                e_col1, e_col2, e_col3 = st.columns(3)
-                e_nome = e_col1.text_input("Cognome e Nome*", value=cur_nome)
-                e_cf = e_col2.text_input("Codice Fiscale", value=cur_cf)
-                e_matricola = e_col3.text_input("Matricola/Tessera N°", value=cur_matricola)
-                e_scheda = st.text_input("N° Scheda Attività (secondo tesseramento, es. dirigente che gioca)", value=cur_scheda)
+                with st.form("form_edit_anagrafica"):
+                    st.markdown(f"#### Scheda di: **{cur_nome}**")
+                    e_col1, e_col2, e_col3 = st.columns(3)
+                    e_nome = e_col1.text_input("Cognome e Nome*", value=cur_nome)
+                    e_cf = e_col2.text_input("Codice Fiscale", value=cur_cf)
+                    e_matricola = e_col3.text_input("Matricola/Tessera N°", value=cur_matricola)
+                    e_scheda = st.text_input("N° Scheda Attività (secondo tesseramento, es. dirigente che gioca)", value=cur_scheda)
 
-                e_col4, e_col5, e_col6 = st.columns(3)
-                cat_idx = CATEGORIE_LISTA.index(cur_cat) if cur_cat in CATEGORIE_LISTA else 0
-                e_categoria = e_col4.selectbox("Categoria / Inquadramento", CATEGORIE_LISTA, index=cat_idx)
+                    e_col4, e_col5, e_col6 = st.columns(3)
+                    cat_idx = CATEGORIE_LISTA.index(cur_cat) if cur_cat in CATEGORIE_LISTA else 0
+                    e_categoria = e_col4.selectbox("Categoria / Inquadramento", CATEGORIE_LISTA, index=cat_idx)
 
-                # Un ruolo non in elenco (es. "Calciatore" da importazione) viene mantenuto, non sostituito col primo
-                ruoli_opzioni = RUOLI_LISTA if cur_role in RUOLI_LISTA else [cur_role] + RUOLI_LISTA
-                e_ruolo = e_col5.selectbox("Ruolo", ruoli_opzioni, index=ruoli_opzioni.index(cur_role))
-                e_quota = e_col6.number_input("Quota personalizzata (€)", value=float(cur_quota), step=10.0,
-                                              help="Lascia 0 per usare la quota dei Parametri Stagione.")
+                    # Un ruolo non in elenco (es. "Calciatore" da importazione) viene mantenuto, non sostituito col primo
+                    ruoli_opzioni = RUOLI_LISTA if cur_role in RUOLI_LISTA else [cur_role] + RUOLI_LISTA
+                    e_ruolo = e_col5.selectbox("Ruolo", ruoli_opzioni, index=ruoli_opzioni.index(cur_role))
+                    e_quota = e_col6.number_input("Quota personalizzata (€)", value=float(cur_quota), step=10.0,
+                                                  help="Lascia 0 per usare la quota dei Parametri Stagione.")
 
-                e_col7, e_col8, e_col9 = st.columns(3)
-                st_opts = ["ATTIVO", "INATTIVO", "IN_PRESTITO"]
-                st_idx = st_opts.index(cur_stato) if cur_stato in st_opts else 0
-                e_stato = e_col7.selectbox("Stato Scheda", st_opts, index=st_idx)
-                e_maglia = e_col8.number_input("N° maglia abituale (0 = nessuno)", 0, 99, cur_maglia)
-                e_tipo_tess = e_col9.text_input("Tipo tessera (es. A, D, D/A)", value=cur_tipo_tess)
-                d_col1, d_col2 = st.columns(2)
-                e_tipo_doc = d_col1.text_input("Documento d'identità (es. CIE, C.I., PT)", value=cur_tipo_doc)
-                e_num_doc = d_col2.text_input("N° documento d'identità", value=cur_num_doc)
-                c_col1, c_col2 = st.columns(2)
-                e_tel = c_col1.text_input("Telefono (per i solleciti WhatsApp)", value=cur_tel)
-                e_email = c_col2.text_input("Email", value=cur_email)
-                r_col1, r_col2, r_col3, r_col4 = st.columns([3, 1, 2, 1])
-                e_indirizzo = r_col1.text_input("Indirizzo di residenza", value=cur_indirizzo)
-                e_cap = r_col2.text_input("CAP", value=cur_cap, max_chars=5)
-                e_comune = r_col3.text_input("Comune", value=cur_comune)
-                e_prov = r_col4.text_input("Prov.", value=cur_prov, max_chars=2)
-                st.caption("Basta il CAP o il comune: al salvataggio l'altro si completa da solo quando è possibile.")
-                s_col1, s_col2 = st.columns(2)
-                e_ammissione = s_col1.date_input("Data di ammissione a socio", value=cur_ammissione, format="DD/MM/YYYY",
-                                                 help="Per il libro soci. Nuove schede: se vuota si usa la data di oggi.")
-                e_uscita = s_col2.date_input("Data di uscita (solo se INATTIVO)", value=cur_uscita, format="DD/MM/YYYY",
-                                             help="Per il libro soci. Chi passa ora a INATTIVO senza data riceve la data di oggi; "
-                                                  "con stato ATTIVO o IN PRESTITO la data viene tolta.")
-                e_gioca = st.checkbox("⚽ Gioca / svolge attività sportiva (certificato medico obbligatorio)", value=cur_gioca)
-                e_socio_altrove = st.checkbox("Socio di un'altra società: qui ha solo la scheda attività", value=cur_socio_altrove, help="Il numero di tessera inserito è quello della scheda attività. Non è socio di questa società: non paga la quota associativa.")
+                    e_col7, e_col8, e_col9 = st.columns(3)
+                    st_opts = ["ATTIVO", "INATTIVO", "IN_PRESTITO"]
+                    st_idx = st_opts.index(cur_stato) if cur_stato in st_opts else 0
+                    e_stato = e_col7.selectbox("Stato Scheda", st_opts, index=st_idx)
+                    e_maglia = e_col8.number_input("N° maglia abituale (0 = nessuno)", 0, 99, cur_maglia)
+                    e_tipo_tess = e_col9.text_input("Tipo tessera (es. A, D, D/A)", value=cur_tipo_tess)
+                    d_col1, d_col2 = st.columns(2)
+                    e_tipo_doc = d_col1.text_input("Documento d'identità (es. CIE, C.I., PT)", value=cur_tipo_doc)
+                    e_num_doc = d_col2.text_input("N° documento d'identità", value=cur_num_doc)
+                    c_col1, c_col2 = st.columns(2)
+                    e_tel = c_col1.text_input("Telefono (per i solleciti WhatsApp)", value=cur_tel)
+                    e_email = c_col2.text_input("Email", value=cur_email)
+                    r_col1, r_col2, r_col3, r_col4 = st.columns([3, 1, 2, 1])
+                    e_indirizzo = r_col1.text_input("Indirizzo di residenza", value=cur_indirizzo)
+                    e_cap = r_col2.text_input("CAP", value=cur_cap, max_chars=5)
+                    e_comune = r_col3.text_input("Comune", value=cur_comune)
+                    e_prov = r_col4.text_input("Prov.", value=cur_prov, max_chars=2)
+                    st.caption("Basta il CAP o il comune: al salvataggio l'altro si completa da solo quando è possibile.")
+                    s_col1, s_col2 = st.columns(2)
+                    e_ammissione = s_col1.date_input("Data di ammissione a socio", value=cur_ammissione, format="DD/MM/YYYY",
+                                                     help="Per il libro soci. Nuove schede: se vuota si usa la data di oggi.")
+                    e_uscita = s_col2.date_input("Data di uscita (solo se INATTIVO)", value=cur_uscita, format="DD/MM/YYYY",
+                                                 help="Per il libro soci. Chi passa ora a INATTIVO senza data riceve la data di oggi; "
+                                                      "con stato ATTIVO o IN PRESTITO la data viene tolta.")
+                    e_gioca = st.checkbox("⚽ Gioca / svolge attività sportiva (certificato medico obbligatorio)", value=cur_gioca)
+                    e_socio_altrove = st.checkbox("Socio di un'altra società: qui ha solo la scheda attività", value=cur_socio_altrove, help="Il numero di tessera inserito è quello della scheda attività. Non è socio di questa società: non paga la quota associativa.")
 
-                st.markdown("---")
-                # Il certificato si chiede solo a chi gioca: per gli altri i campi non compaiono e non vengono controllati
-                e_data_ril = e_data_scad = None
-                e_medico = ""
-                if cur_gioca:
-                    st.write("**Certificato Medico Agonistico**")
-                    m_col1, m_col2, m_col3 = st.columns(3)
+                    st.markdown("---")
+                    # Il certificato si chiede solo a chi gioca: per gli altri i campi non compaiono e non vengono controllati
+                    e_data_ril = e_data_scad = None
+                    e_medico = ""
+                    if cur_gioca:
+                        st.write("**Certificato Medico Agonistico**")
+                        m_col1, m_col2, m_col3 = st.columns(3)
 
-                    # Nessuna data predefinita: un certificato assente resta assente
-                    try:
-                        d_ril = datetime.datetime.strptime(cur_ril, "%Y-%m-%d").date() if cur_ril else None
-                    except Exception:
-                        d_ril = None
+                        # Nessuna data predefinita: un certificato assente resta assente
+                        try:
+                            d_ril = datetime.datetime.strptime(cur_ril, "%Y-%m-%d").date() if cur_ril else None
+                        except Exception:
+                            d_ril = None
 
-                    try:
-                        d_scad = datetime.datetime.strptime(cur_scad, "%Y-%m-%d").date() if cur_scad else None
-                    except Exception:
-                        d_scad = None
+                        try:
+                            d_scad = datetime.datetime.strptime(cur_scad, "%Y-%m-%d").date() if cur_scad else None
+                        except Exception:
+                            d_scad = None
 
-                    e_data_ril = m_col1.date_input("Data Rilascio Certificato", value=d_ril, format="DD/MM/YYYY")
-                    e_data_scad = m_col2.date_input("Data Scadenza Certificato", value=d_scad, format="DD/MM/YYYY")
-                    e_medico = m_col3.text_input("Medico Certificatore", value=cur_medico)
-                else:
-                    st.caption("🩺 Non gioca: il certificato medico non è richiesto. Se inizia a giocare, spunta «Gioca» e salva: "
-                               "compariranno i campi del certificato.")
+                        e_data_ril = m_col1.date_input("Data Rilascio Certificato", value=d_ril, format="DD/MM/YYYY")
+                        e_data_scad = m_col2.date_input("Data Scadenza Certificato", value=d_scad, format="DD/MM/YYYY")
+                        e_medico = m_col3.text_input("Medico Certificatore", value=cur_medico)
+                    else:
+                        st.caption("🩺 Non gioca: il certificato medico non è richiesto. Se inizia a giocare, spunta «Gioca» e salva: "
+                                   "compariranno i campi del certificato.")
 
-                if st.form_submit_button("💾 Salva Modifiche Scheda"):
-                    if e_gioca and e_data_ril and e_data_scad and e_data_scad <= e_data_ril:
-                        st.error("La data di scadenza del certificato deve essere successiva alla data di rilascio.")
-                        st.stop()
-                    # La data di oggi si mette solo a chi diventa INATTIVO adesso: per chi lo era già non si sa quando è uscito
-                    uscita_salva = None
-                    if e_stato == "INATTIVO":
-                        if e_uscita:
-                            uscita_salva = e_uscita.isoformat()
-                        elif cur_stato != "INATTIVO":
-                            uscita_salva = datetime.date.today().isoformat()
-                    if e_ammissione and uscita_salva and uscita_salva < e_ammissione.isoformat():
-                        st.error("La data di uscita non può essere precedente alla data di ammissione.")
-                        st.stop()
-                    res_cap, res_comune, res_prov, avviso_cap = cap_comuni.completa(
-                        indice_cap() if (str(e_cap).strip() or str(e_comune).strip()) else None, e_cap, e_comune, e_prov)
-                    try:
-                        with db_write() as w_conn:
-                            w_conn.execute(
-                                "UPDATE anagrafiche SET indirizzo = ?, cap = ?, comune = ?, provincia = ? WHERE id = ?",
-                                [str(e_indirizzo).strip() or None, res_cap or None, res_comune or None, res_prov or None, int(selected_anag_id)])
-                            w_conn.execute(
-                                "UPDATE anagrafiche SET denominazione = ?, codice_fiscale = ?, tipo_documento = ?, numero_documento = ?, telefono = ?, email = ? WHERE id = ?",
-                                [str(e_nome).strip(), str(e_cf).strip(), str(e_tipo_doc).strip() or None, str(e_num_doc).strip() or None,
-                                 str(e_tel).strip() or None, str(e_email).strip() or None, int(selected_anag_id)]
-                            )
-
-                            if has_tess:
+                    if st.form_submit_button("💾 Salva Modifiche Scheda"):
+                        if e_gioca and e_data_ril and e_data_scad and e_data_scad <= e_data_ril:
+                            st.error("La data di scadenza del certificato deve essere successiva alla data di rilascio.")
+                            st.stop()
+                        # La data di oggi si mette solo a chi diventa INATTIVO adesso: per chi lo era già non si sa quando è uscito
+                        uscita_salva = None
+                        if e_stato == "INATTIVO":
+                            if e_uscita:
+                                uscita_salva = e_uscita.isoformat()
+                            elif cur_stato != "INATTIVO":
+                                uscita_salva = datetime.date.today().isoformat()
+                        if e_ammissione and uscita_salva and uscita_salva < e_ammissione.isoformat():
+                            st.error("La data di uscita non può essere precedente alla data di ammissione.")
+                            st.stop()
+                        res_cap, res_comune, res_prov, avviso_cap = cap_comuni.completa(
+                            indice_cap() if (str(e_cap).strip() or str(e_comune).strip()) else None, e_cap, e_comune, e_prov)
+                        try:
+                            with db_write() as w_conn:
                                 w_conn.execute(
-                                    "UPDATE tesserati_calcio SET numero_tessera = ?, numero_scheda_attivita = ?, tipo_tessera = ?, numero_maglia = ?, categoria = ?, ruolo = ?, "
-                                    "quota_stagionale = ?, stato = ?, gioca = ?, socio_altra_societa = ?, data_tesseramento = ?, data_uscita = ? WHERE anagrafica_id = ?",
-                                    [str(e_matricola).strip(), str(e_scheda).strip(), str(e_tipo_tess).strip() or None, int(e_maglia) or None, str(e_categoria),
-                                     str(e_ruolo), float(e_quota), str(e_stato), int(e_gioca), int(e_socio_altrove),
-                                     e_ammissione.isoformat() if e_ammissione else None, uscita_salva, int(selected_anag_id)]
-                                )
-                            else:
+                                    "UPDATE anagrafiche SET indirizzo = ?, cap = ?, comune = ?, provincia = ? WHERE id = ?",
+                                    [str(e_indirizzo).strip() or None, res_cap or None, res_comune or None, res_prov or None, int(selected_anag_id)])
                                 w_conn.execute(
-                                    "INSERT INTO tesserati_calcio (anagrafica_id, numero_tessera, numero_scheda_attivita, tipo_tessera, numero_maglia, categoria, ruolo, "
-                                    "data_tesseramento, quota_stagionale, stato, gioca, socio_altra_societa, data_uscita) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                                    [int(selected_anag_id), str(e_matricola).strip(), str(e_scheda).strip(), str(e_tipo_tess).strip() or None, int(e_maglia) or None,
-                                     str(e_categoria), str(e_ruolo), (e_ammissione or datetime.date.today()).isoformat(), float(e_quota), str(e_stato),
-                                     int(e_gioca), int(e_socio_altrove), uscita_salva]
+                                    "UPDATE anagrafiche SET denominazione = ?, codice_fiscale = ?, tipo_documento = ?, numero_documento = ?, telefono = ?, email = ? WHERE id = ?",
+                                    [str(e_nome).strip(), str(e_cf).strip(), str(e_tipo_doc).strip() or None, str(e_num_doc).strip() or None,
+                                     str(e_tel).strip() or None, str(e_email).strip() or None, int(selected_anag_id)]
                                 )
 
-                            if e_gioca and e_data_scad:
-                                if has_cert:
+                                if has_tess:
                                     w_conn.execute(
-                                        # Solo il certificato più recente: quelli precedenti restano come storico
-                                        "UPDATE certificati_medici SET data_rilascio = ?, data_scadenza = ?, medico_certificatore = ? WHERE id = "
-                                        "(SELECT id FROM certificati_medici WHERE anagrafica_id = ? ORDER BY data_scadenza DESC LIMIT 1)",
-                                        [str(e_data_ril or ""), str(e_data_scad), str(e_medico).strip(), int(selected_anag_id)]
+                                        "UPDATE tesserati_calcio SET numero_tessera = ?, numero_scheda_attivita = ?, tipo_tessera = ?, numero_maglia = ?, categoria = ?, ruolo = ?, "
+                                        "quota_stagionale = ?, stato = ?, gioca = ?, socio_altra_societa = ?, data_tesseramento = ?, data_uscita = ? WHERE anagrafica_id = ?",
+                                        [str(e_matricola).strip(), str(e_scheda).strip(), str(e_tipo_tess).strip() or None, int(e_maglia) or None, str(e_categoria),
+                                         str(e_ruolo), float(e_quota), str(e_stato), int(e_gioca), int(e_socio_altrove),
+                                         e_ammissione.isoformat() if e_ammissione else None, uscita_salva, int(selected_anag_id)]
                                     )
                                 else:
                                     w_conn.execute(
-                                        "INSERT INTO certificati_medici (anagrafica_id, tipo, data_rilascio, data_scadenza, medico_certificatore, stato_idoneita) "
-                                        "VALUES (?, 'AGONISTICO', ?, ?, ?, 'IDONEO')",
-                                        [int(selected_anag_id), str(e_data_ril or ""), str(e_data_scad), str(e_medico).strip()]
+                                        "INSERT INTO tesserati_calcio (anagrafica_id, numero_tessera, numero_scheda_attivita, tipo_tessera, numero_maglia, categoria, ruolo, "
+                                        "data_tesseramento, quota_stagionale, stato, gioca, socio_altra_societa, data_uscita) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                        [int(selected_anag_id), str(e_matricola).strip(), str(e_scheda).strip(), str(e_tipo_tess).strip() or None, int(e_maglia) or None,
+                                         str(e_categoria), str(e_ruolo), (e_ammissione or datetime.date.today()).isoformat(), float(e_quota), str(e_stato),
+                                         int(e_gioca), int(e_socio_altrove), uscita_salva]
                                     )
 
-                        st.session_state["flash"] = f"Scheda di '{e_nome}' aggiornata con successo!" + (f" ⚠️ {avviso_cap}" if avviso_cap else "")
-                        st.rerun()
-                    except Exception as ex_edit:
-                        st.error(f"Errore durante l'aggiornamento della scheda: {ex_edit}")
+                                if e_gioca and e_data_scad:
+                                    if has_cert:
+                                        w_conn.execute(
+                                            # Solo il certificato più recente: quelli precedenti restano come storico
+                                            "UPDATE certificati_medici SET data_rilascio = ?, data_scadenza = ?, medico_certificatore = ? WHERE id = "
+                                            "(SELECT id FROM certificati_medici WHERE anagrafica_id = ? ORDER BY data_scadenza DESC LIMIT 1)",
+                                            [str(e_data_ril or ""), str(e_data_scad), str(e_medico).strip(), int(selected_anag_id)]
+                                        )
+                                    else:
+                                        w_conn.execute(
+                                            "INSERT INTO certificati_medici (anagrafica_id, tipo, data_rilascio, data_scadenza, medico_certificatore, stato_idoneita) "
+                                            "VALUES (?, 'AGONISTICO', ?, ?, ?, 'IDONEO')",
+                                            [int(selected_anag_id), str(e_data_ril or ""), str(e_data_scad), str(e_medico).strip()]
+                                        )
 
-            st.divider()
-            with st.expander("🗑️ Elimina Scheda Anagrafica"):
-                st.warning("Attenzione: questa operazione rimuoverà definitivamente la persona ed i suoi dati associati se non vi sono documenti contabili collegati.")
-                if st.button("❌ Conferma Eliminazione Definitiva Persona"):
-                    conn = get_ro_conn()
-                    try:
-                        c_ric = conn.execute("SELECT COUNT(*) FROM ricevute_istituzionali WHERE anagrafica_id = ?", [selected_anag_id]).fetchone()[0]
-                        c_comp = conn.execute("SELECT COUNT(*) FROM compensi_sportivi WHERE collaboratore_id IN (SELECT id FROM collaboratori_sportivi WHERE anagrafica_id = ?)", [selected_anag_id]).fetchone()[0]
-                        c_rimb = conn.execute("SELECT COUNT(*) FROM rimborsi_trasferta WHERE anagrafica_id = ?", [selected_anag_id]).fetchone()[0]
-                    finally:
-                        conn.close()
-
-                    if c_ric > 0 or c_comp > 0 or c_rimb > 0:
-                        st.error("Impossibile eliminare l'anagrafica: risultano ricevute, compensi o rimborsi trasferta associati. "
-                                 "Se non è più tesserata, imposta lo stato INATTIVO.")
-                    else:
-                        try:
-                            with db_write() as w_conn:
-                                w_conn.execute("DELETE FROM certificati_medici WHERE anagrafica_id = ?", [selected_anag_id])
-                                w_conn.execute("DELETE FROM tesserati_calcio WHERE anagrafica_id = ?", [selected_anag_id])
-                                w_conn.execute("DELETE FROM collaboratori_sportivi WHERE anagrafica_id = ?", [selected_anag_id])
-                                w_conn.execute("DELETE FROM anagrafiche WHERE id = ?", [selected_anag_id])
-
-                            st.session_state["flash"] = "Anagrafica eliminata con successo!"
+                            st.session_state["flash"] = f"Scheda di '{e_nome}' aggiornata con successo!" + (f" ⚠️ {avviso_cap}" if avviso_cap else "")
                             st.rerun()
-                        except Exception as ex_del:
-                            st.error(f"Errore durante l'eliminazione: {ex_del}")
+                        except Exception as ex_edit:
+                            st.error(f"Errore durante l'aggiornamento della scheda: {ex_edit}")
+
+                st.divider()
+                with st.expander("🗑️ Elimina Scheda Anagrafica"):
+                    st.warning("Attenzione: questa operazione rimuoverà definitivamente la persona ed i suoi dati associati se non vi sono documenti contabili collegati.")
+                    if st.button("❌ Conferma Eliminazione Definitiva Persona"):
+                        conn = get_ro_conn()
+                        try:
+                            c_ric = conn.execute("SELECT COUNT(*) FROM ricevute_istituzionali WHERE anagrafica_id = ?", [selected_anag_id]).fetchone()[0]
+                            c_comp = conn.execute("SELECT COUNT(*) FROM compensi_sportivi WHERE collaboratore_id IN (SELECT id FROM collaboratori_sportivi WHERE anagrafica_id = ?)", [selected_anag_id]).fetchone()[0]
+                            c_rimb = conn.execute("SELECT COUNT(*) FROM rimborsi_trasferta WHERE anagrafica_id = ?", [selected_anag_id]).fetchone()[0]
+                        finally:
+                            conn.close()
+
+                        if c_ric > 0 or c_comp > 0 or c_rimb > 0:
+                            st.error("Impossibile eliminare l'anagrafica: risultano ricevute, compensi o rimborsi trasferta associati. "
+                                     "Se non è più tesserata, imposta lo stato INATTIVO.")
+                        else:
+                            try:
+                                with db_write() as w_conn:
+                                    w_conn.execute("DELETE FROM certificati_medici WHERE anagrafica_id = ?", [selected_anag_id])
+                                    w_conn.execute("DELETE FROM tesserati_calcio WHERE anagrafica_id = ?", [selected_anag_id])
+                                    w_conn.execute("DELETE FROM collaboratori_sportivi WHERE anagrafica_id = ?", [selected_anag_id])
+                                    w_conn.execute("DELETE FROM anagrafiche WHERE id = ?", [selected_anag_id])
+
+                                st.session_state["flash"] = "Anagrafica eliminata con successo!"
+                                st.rerun()
+                            except Exception as ex_del:
+                                st.error(f"Errore durante l'eliminazione: {ex_del}")
         else:
             st.info("Nessuna anagrafica presente da modificare.")
 
@@ -2753,43 +2787,46 @@ def pagina_lavoro_sportivo():
         if not df_staff.empty:
             with st.expander("✏️ Modifica o elimina un collaboratore"):
                 coll_mod = {f"{r.denominazione} ({r.mansione})": r for r in df_staff.itertuples()}
-                sel_mod = st.selectbox("Collaboratore", list(coll_mod), key="coll_mod_sel",
-                                       help="Clicca e scrivi una parte del nome per filtrare l'elenco.")
-                r_mod = coll_mod[sel_mod]
-                with st.form(f"modifica_collaboratore_{r_mod.id}"):
-                    m1, m2, m3 = st.columns(3)
-                    mansione_m = m1.text_input("Mansione", value=r_mod.mansione)
-                    contratti_l = list(ls.CONTRATTI)
-                    contratto_m = m2.selectbox("Tipo di rapporto", contratti_l, format_func=lambda t: ls.CONTRATTI[t],
-                                               index=contratti_l.index(r_mod.tipo_contratto) if r_mod.tipo_contratto in contratti_l else 0)
-                    pattuito_m = m3.number_input("Compenso pattuito (€)", min_value=0.0, step=50.0, value=float(r_mod.compenso_pattuito or 0))
-                    altra_m = st.checkbox("Già iscritto ad altra previdenza obbligatoria o pensionato", value=bool(int(r_mod.altra_previdenza or 0)),
-                                          help=AIUTO_ALTRA_PREVIDENZA)
-                    if st.form_submit_button("💾 Salva modifiche"):
+                sel_mod = st.selectbox("Collaboratore", list(coll_mod), key="coll_mod_sel", index=None,
+                                       placeholder="Scrivi il nome per cercare o scegli dall'elenco")
+                r_mod = coll_mod[sel_mod] if sel_mod else None
+                if r_mod is None:
+                    st.info("Scegli il collaboratore da modificare.")
+                else:
+                    with st.form(f"modifica_collaboratore_{r_mod.id}"):
+                        m1, m2, m3 = st.columns(3)
+                        mansione_m = m1.text_input("Mansione", value=r_mod.mansione)
+                        contratti_l = list(ls.CONTRATTI)
+                        contratto_m = m2.selectbox("Tipo di rapporto", contratti_l, format_func=lambda t: ls.CONTRATTI[t],
+                                                   index=contratti_l.index(r_mod.tipo_contratto) if r_mod.tipo_contratto in contratti_l else 0)
+                        pattuito_m = m3.number_input("Compenso pattuito (€)", min_value=0.0, step=50.0, value=float(r_mod.compenso_pattuito or 0))
+                        altra_m = st.checkbox("Già iscritto ad altra previdenza obbligatoria o pensionato", value=bool(int(r_mod.altra_previdenza or 0)),
+                                              help=AIUTO_ALTRA_PREVIDENZA)
+                        if st.form_submit_button("💾 Salva modifiche"):
+                            try:
+                                with db_write() as w_conn:
+                                    w_conn.execute("UPDATE collaboratori_sportivi SET mansione = ?, tipo_contratto = ?, compenso_pattuito = ?, altra_previdenza = ? WHERE id = ?",
+                                                   [mansione_m.strip() or r_mod.mansione, contratto_m, float(pattuito_m), int(altra_m), int(r_mod.id)])
+                                st.session_state["flash"] = "Collaboratore aggiornato."
+                                st.rerun()
+                            except Exception as ex_mod:
+                                st.error(f"Errore durante il salvataggio: {ex_mod}")
+                    if st.button("🗑️ Elimina collaboratore", key=f"coll_del_{r_mod.id}"):
+                        conn = get_ro_conn()
                         try:
-                            with db_write() as w_conn:
-                                w_conn.execute("UPDATE collaboratori_sportivi SET mansione = ?, tipo_contratto = ?, compenso_pattuito = ?, altra_previdenza = ? WHERE id = ?",
-                                               [mansione_m.strip() or r_mod.mansione, contratto_m, float(pattuito_m), int(altra_m), int(r_mod.id)])
-                            st.session_state["flash"] = "Collaboratore aggiornato."
-                            st.rerun()
-                        except Exception as ex_mod:
-                            st.error(f"Errore durante il salvataggio: {ex_mod}")
-                if st.button("🗑️ Elimina collaboratore", key=f"coll_del_{r_mod.id}"):
-                    conn = get_ro_conn()
-                    try:
-                        n_comp = conn.execute("SELECT COUNT(*) FROM compensi_sportivi WHERE collaboratore_id = ?", [int(r_mod.id)]).fetchone()[0]
-                    finally:
-                        conn.close()
-                    if n_comp:
-                        st.error(f"Non si può eliminare: ha {n_comp} compensi registrati.")
-                    else:
-                        try:
-                            with db_write() as w_conn:
-                                w_conn.execute("DELETE FROM collaboratori_sportivi WHERE id = ?", [int(r_mod.id)])
-                            st.session_state["flash"] = "Collaboratore eliminato (la persona resta in anagrafica)."
-                            st.rerun()
-                        except Exception as ex_del:
-                            st.error(f"Errore durante l'eliminazione: {ex_del}")
+                            n_comp = conn.execute("SELECT COUNT(*) FROM compensi_sportivi WHERE collaboratore_id = ?", [int(r_mod.id)]).fetchone()[0]
+                        finally:
+                            conn.close()
+                        if n_comp:
+                            st.error(f"Non si può eliminare: ha {n_comp} compensi registrati.")
+                        else:
+                            try:
+                                with db_write() as w_conn:
+                                    w_conn.execute("DELETE FROM collaboratori_sportivi WHERE id = ?", [int(r_mod.id)])
+                                st.session_state["flash"] = "Collaboratore eliminato (la persona resta in anagrafica)."
+                                st.rerun()
+                            except Exception as ex_del:
+                                st.error(f"Errore durante l'eliminazione: {ex_del}")
 
     with tab_comp:
         if not df_staff.empty:
@@ -2995,48 +3032,100 @@ def pagina_prima_nota():
         for colonna, etichetta, codice in ((m_banca, "🏦 Banca", "10.01.001"), (m_cassa, "💶 Cassa contanti", "10.01.002"), (m_paypal, "🅿️ PayPal", "10.01.003")):
             colonna.metric(etichetta, f"€ {saldi_liquidi.get(codice, 0.0):,.2f}")
         st.caption("Saldi in contabilità alla data di oggi, secondo le registrazioni di prima nota.")
-        with st.expander("➕ Nuova Registrazione Manuale (Uscite / Spese / Incassi Generici)"):
+        with st.expander("➕ Nuova registrazione manuale"):
             df_pdc = leggi_df("SELECT id, codice || ' - ' || nome as conto FROM piano_dei_conti WHERE livello = 3 ORDER BY codice")
 
             pdc_dict = {row["conto"]: int(row["id"]) for _, row in df_pdc.iterrows()}
 
-            with st.form("nuova_prima_nota_manuale", clear_on_submit=True):
-                col1, col2, col3 = st.columns(3)
-                data_reg = col1.date_input("Data Registrazione")
-                num_doc = col2.text_input("N. Documento / Riferimento", value="Scontrino / Bonifico")
-                causale = col3.text_input("Causale Operazione", value="Pagamento affitto campo / Acquisto materiale")
-
-                tipo_att = st.selectbox("Ambito Attività", ["ISTITUZIONALE", "COMMERCIALE_398"])
-
-                col_d, col_a = st.columns(2)
-                conto_dare = col_d.selectbox("Conto DARE (Costo da addebitare o Cassa/Banca che riceve)", list(pdc_dict.keys()), key="dare_acc",
-                                             index=None, placeholder="Scrivi per cercare il conto")
-                importo_dare = col_d.number_input("Importo DARE (€)", min_value=0.01, step=10.0, key="dare_val")
-
-                conto_avere = col_a.selectbox("Conto AVERE (Cassa/Banca da cui si paga o Ricavo)", list(pdc_dict.keys()), key="avere_acc",
-                                              index=None, placeholder="Scrivi per cercare il conto")
-                importo_avere = col_a.number_input("Importo AVERE (€)", min_value=0.01, step=10.0, key="avere_val")
-
-                if st.form_submit_button("Salva Scrittura in Prima Nota"):
-                    if conto_dare is None or conto_avere is None:
-                        st.error("Scegli sia il conto DARE sia il conto AVERE.")
-                    elif conto_dare == conto_avere:
-                        st.error("I conti DARE e AVERE non possono essere identici.")
-                    elif round(importo_dare, 2) != round(importo_avere, 2):
-                        st.error("Gli importi DARE e AVERE devono essere perfettamente uguali.")
+            scelte_rm = ["💸 Spesa pagata", "💰 Incasso", "🔁 Spostamento tra banca, cassa e PayPal", "📐 Altro (conti DARE e AVERE)"]
+            tipo_rm = st.segmented_control("Cosa vuoi registrare?", scelte_rm, default=scelte_rm[0], key="pn_rm_tipo") or scelte_rm[0]
+            LIQUIDI_RM = {"Banca": "10.01.001", "Cassa contanti": "10.01.002", "PayPal": "10.01.003"}
+            id_liquidi = {nome: int(df_pdc.loc[df_pdc["conto"].str.startswith(cod), "id"].iloc[0]) for nome, cod in LIQUIDI_RM.items()
+                          if df_pdc["conto"].str.startswith(cod).any()}
+            if not tipo_rm.startswith("📐"):
+                costi_ricavi = leggi_df("SELECT id, codice || ' - ' || nome AS conto FROM piano_dei_conti WHERE livello = 3 AND tipo = ? ORDER BY codice",
+                                        ["RICAVO" if tipo_rm.startswith("💰") else "COSTO"])
+                with st.form(f"pn_rm_{scelte_rm.index(tipo_rm)}", clear_on_submit=True):
+                    g1, g2, g3 = st.columns(3)
+                    data_g = g1.date_input("Data", format="DD/MM/YYYY")
+                    importo_g = g2.number_input("Importo (€)", min_value=0.01, step=10.0)
+                    doc_g = g3.text_input("Documento / riferimento", value="Scontrino" if tipo_rm.startswith("💸") else "")
+                    descr_g = st.text_input("Descrizione", placeholder="Es. acquisto palloni, affitto campo, quota incassata in contanti…")
+                    if tipo_rm.startswith("🔁"):
+                        h1, h2 = st.columns(2)
+                        da_g = h1.selectbox("Da (esce)", list(id_liquidi), key="pn_rm_da")
+                        a_g = h2.selectbox("A (entra)", [n for n in id_liquidi if n != da_g] or list(id_liquidi), key="pn_rm_a")
+                        conto_g = None
                     else:
+                        h1, h2 = st.columns(2)
+                        conto_g = h1.selectbox("Tipo di spesa" if tipo_rm.startswith("💸") else "Tipo di entrata", list(costi_ricavi["conto"]), index=None,
+                                               placeholder="Scrivi per cercare", key="pn_rm_conto")
+                        liquido_g = h2.selectbox("Pagata con" if tipo_rm.startswith("💸") else "Incassato su", list(id_liquidi), key="pn_rm_liq")
+                    ambito_g = st.selectbox("Ambito attività", ["ISTITUZIONALE", "COMMERCIALE_398"], key="pn_rm_ambito",
+                                            help="Istituzionale: attività dei soci (quote, spese sportive). Commerciale: sponsorizzazioni e pubblicità (regime 398/91).")
+                    if st.form_submit_button("Salva la registrazione"):
+                        if tipo_rm.startswith("🔁"):
+                            if da_g == a_g:
+                                st.error("Scegli due conti diversi.")
+                                st.stop()
+                            righe_g = [(id_liquidi[a_g], descr_g.strip() or "Spostamento", float(importo_g), 0.0), (id_liquidi[da_g], descr_g.strip() or "Spostamento", 0.0, float(importo_g))]
+                            causale_g = descr_g.strip() or f"Spostamento da {da_g} a {a_g}"
+                        else:
+                            if conto_g is None:
+                                st.error("Scegli il tipo di " + ("spesa." if tipo_rm.startswith("💸") else "entrata."))
+                                st.stop()
+                            id_conto_g = int(costi_ricavi.loc[costi_ricavi["conto"] == conto_g, "id"].iloc[0])
+                            causale_g = descr_g.strip() or conto_g.split(" - ", 1)[-1]
+                            if tipo_rm.startswith("💸"):
+                                righe_g = [(id_conto_g, causale_g, float(importo_g), 0.0), (id_liquidi[liquido_g], causale_g, 0.0, float(importo_g))]
+                            else:
+                                righe_g = [(id_liquidi[liquido_g], causale_g, float(importo_g), 0.0), (id_conto_g, causale_g, 0.0, float(importo_g))]
                         try:
-                            righe_journal = [
-                                (int(pdc_dict[conto_dare]), str(causale).strip(), float(importo_dare), 0.0),
-                                (int(pdc_dict[conto_avere]), str(causale).strip(), 0.0, float(importo_avere))
-                            ]
                             with db_write() as w_conn:
-                                post_journal(w_conn, data_reg, num_doc, causale, tipo_att, righe_journal)
-
-                            st.session_state["flash"] = "Scrittura di Prima Nota registrata con successo!"
+                                post_journal(w_conn, data_g, doc_g.strip() or "Registrazione", causale_g, ambito_g, righe_g)
+                            st.session_state["flash"] = "Registrazione salvata in prima nota."
                             st.rerun()
-                        except Exception as ex_pn:
-                            st.error(f"Errore durante il salvataggio in Prima Nota: {ex_pn}")
+                        except Exception as ex_g:
+                            st.error(f"Errore durante il salvataggio in Prima Nota: {ex_g}")
+                st.caption("Se la spesa è di un fornitore da pagare più avanti, usa la pagina «Spese e fornitori».")
+            else:
+                with st.form("nuova_prima_nota_manuale", clear_on_submit=True):
+                    col1, col2, col3 = st.columns(3)
+                    data_reg = col1.date_input("Data Registrazione")
+                    num_doc = col2.text_input("N. Documento / Riferimento", value="Scontrino / Bonifico")
+                    causale = col3.text_input("Causale Operazione", value="Pagamento affitto campo / Acquisto materiale")
+
+                    tipo_att = st.selectbox("Ambito Attività", ["ISTITUZIONALE", "COMMERCIALE_398"])
+
+                    col_d, col_a = st.columns(2)
+                    conto_dare = col_d.selectbox("Conto DARE (Costo da addebitare o Cassa/Banca che riceve)", list(pdc_dict.keys()), key="dare_acc",
+                                                 index=None, placeholder="Scrivi per cercare il conto")
+                    importo_dare = col_d.number_input("Importo DARE (€)", min_value=0.01, step=10.0, key="dare_val")
+
+                    conto_avere = col_a.selectbox("Conto AVERE (Cassa/Banca da cui si paga o Ricavo)", list(pdc_dict.keys()), key="avere_acc",
+                                                  index=None, placeholder="Scrivi per cercare il conto")
+                    importo_avere = col_a.number_input("Importo AVERE (€)", min_value=0.01, step=10.0, key="avere_val")
+
+                    if st.form_submit_button("Salva Scrittura in Prima Nota"):
+                        if conto_dare is None or conto_avere is None:
+                            st.error("Scegli sia il conto DARE sia il conto AVERE.")
+                        elif conto_dare == conto_avere:
+                            st.error("I conti DARE e AVERE non possono essere identici.")
+                        elif round(importo_dare, 2) != round(importo_avere, 2):
+                            st.error("Gli importi DARE e AVERE devono essere perfettamente uguali.")
+                        else:
+                            try:
+                                righe_journal = [
+                                    (int(pdc_dict[conto_dare]), str(causale).strip(), float(importo_dare), 0.0),
+                                    (int(pdc_dict[conto_avere]), str(causale).strip(), 0.0, float(importo_avere))
+                                ]
+                                with db_write() as w_conn:
+                                    post_journal(w_conn, data_reg, num_doc, causale, tipo_att, righe_journal)
+
+                                st.session_state["flash"] = "Scrittura di Prima Nota registrata con successo!"
+                                st.rerun()
+                            except Exception as ex_pn:
+                                st.error(f"Errore durante il salvataggio in Prima Nota: {ex_pn}")
 
         with st.expander("✏️ Modifica o elimina una registrazione"):
             st.caption("Scegli la registrazione dal numero (colonna «N° reg.» del giornale qui sotto), dalla data o dalla causale. "
