@@ -746,21 +746,26 @@ def dashboard_allenatore():
     else:
         st.success("Tutti i certificati sono validi fino alla prossima partita.")
 
+    ini, fin, etich = esercizio_corrente()
+    tab = leggi_df("SELECT t.evento_id, t.reti, t.assist, t.ammonizioni, t.espulso, t.anagrafica_id FROM tabellino_giocatori t JOIN eventi_squadra e ON e.id = t.evento_id "
+                   "WHERE e.categoria = ? AND e.data BETWEEN ? AND ?", [cat, str(ini), str(fin)])
     st.markdown("**⚖️ Situazione disciplinare**")
     situazioni = situazione_disciplinare(set(nomi), cat)
     squalificati = [(nomi[a], t) for a, (stato, t) in situazioni.items() if stato == "SQUALIFICATO"]
     diffidati = [(nomi[a], t) for a, (stato, t) in situazioni.items() if stato == "DIFFIDATO"]
+    # regolamento di partecipazione: la 3ª ammonizione in partite diverse della stessa manifestazione comporta la squalifica per una giornata
+    ammonizioni = tab.groupby("anagrafica_id")["ammonizioni"].sum() if not tab.empty else pd.Series(dtype=int)
+    for aid, n_amm in ammonizioni.items():
+        if int(aid) in nomi and int(aid) not in situazioni and int(n_amm) % 3 == 2:
+            diffidati.append((nomi[int(aid)], f"{int(n_amm)} ammonizioni nelle partite registrate: alla prossima scatta la squalifica per una giornata"))
     if squalificati:
         st.dataframe(pd.DataFrame(squalificati, columns=["⛔ Squalificati (non disponibili)", "Dettaglio"]), width="stretch", hide_index=True)
     if diffidati:
-        st.dataframe(pd.DataFrame(diffidati, columns=["⚠️ A rischio squalifica per somma di ammonizioni", "Dettaglio"]), width="stretch", hide_index=True)
+        st.dataframe(pd.DataFrame(diffidati, columns=["⚠️ A rischio: alla prossima ammonizione scatta la squalifica", "Dettaglio"]), width="stretch", hide_index=True)
     if not squalificati and not diffidati:
         st.success("Nessun giocatore squalificato o diffidato. (Dipende dai comunicati importati nella pagina «Convocazioni e presenze».)")
 
     st.markdown("**📈 Statistiche della squadra**")
-    ini, fin, etich = esercizio_corrente()
-    tab = leggi_df("SELECT t.evento_id, t.reti, t.assist, t.ammonizioni, t.espulso, t.anagrafica_id FROM tabellino_giocatori t JOIN eventi_squadra e ON e.id = t.evento_id "
-                   "WHERE e.categoria = ? AND e.data BETWEEN ? AND ?", [cat, str(ini), str(fin)])
     pres = leggi_df("SELECT p.stato FROM presenze_evento p JOIN eventi_squadra e ON e.id = p.evento_id WHERE e.tipo = 'ALLENAMENTO' AND e.categoria = ? "
                     "AND e.data BETWEEN ? AND ?", [cat, str(ini), str(fin)])
     m1, m2, m3, m4, m5 = st.columns(5)

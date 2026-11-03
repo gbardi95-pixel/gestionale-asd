@@ -26,6 +26,9 @@ c.execute("INSERT INTO tabellino_giocatori (evento_id, anagrafica_id, titolare, 
 cu = c.execute("INSERT INTO comunicati_disciplina (numero, data) VALUES (9, ?)", [str(oggi - datetime.timedelta(days=1))]).lastrowid
 c.execute("INSERT INTO provvedimenti_disciplinari (comunicato_id, anagrafica_id, tipo, giornate) VALUES (?, ?, 'SQUALIFICA_GIORNATE', 2)", [cu, ids["Sergio Squalificato"]])
 c.execute("INSERT INTO provvedimenti_disciplinari (comunicato_id, anagrafica_id, tipo) VALUES (?, ?, 'DIFFIDA')", [cu, ids["Dino Diffidato"]])
+ev2 = c.execute("INSERT INTO eventi_squadra (tipo, data, categoria) VALUES ('PARTITA', ?, 'PRIMA_SQUADRA')", [str(oggi - datetime.timedelta(days=14))]).lastrowid
+for e in (ev, ev2):
+    c.execute("INSERT OR REPLACE INTO tabellino_giocatori (evento_id, anagrafica_id, titolare, reti, ammonizioni) VALUES (?, ?, 1, 0, 1)", [e, ids["Carlo Senza"]])
 c.execute("INSERT INTO utenti (id, nome_utente, nome, ruolo, squadre, password_hash, cambio_password) VALUES (1, 'mister', 'Mister', 'ALLENATORE', 'PRIMA_SQUADRA', 'x', 0)")
 c.commit()
 
@@ -42,9 +45,9 @@ print(tabelle)
 cert = tabelle[0]
 assert set(cert["Giocatore"]) == {"Luigi Scaduto", "Paolo InScadenza", "Carlo Senza"}, cert
 assert list(tabelle[1]["⛔ Squalificati (non disponibili)"]) == ["Sergio Squalificato"]
-assert list(tabelle[2]["⚠️ A rischio squalifica per somma di ammonizioni"]) == ["Dino Diffidato"]
+assert list(tabelle[2]["⚠️ A rischio: alla prossima ammonizione scatta la squalifica"]) == ["Dino Diffidato", "Carlo Senza"]
 metriche = {m.label: m.value for m in at.metric}
 print(metriche)
-assert metriche["Reti"] == "2" and metriche["Ammonizioni"] == "1" and metriche["Partite con tabellino"] == "1"
+assert metriche["Reti"] == "2" and metriche["Ammonizioni"] == "3" and metriche["Partite con tabellino"] == "2"
 assert not any("Incassi" in m.value or "IVA" in m.value for m in at.markdown)
 print("TUTTO OK")
