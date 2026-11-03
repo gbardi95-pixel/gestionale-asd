@@ -56,9 +56,9 @@ campo(at.text_input, "Nuova password").set_value("corta"); campo(at.text_input, 
 bottone(at, "Salva la password").click().run(); print("  corta:", [e.value for e in at.error])
 campo(at.text_input, "Nuova password").set_value("MisterNuova1"); campo(at.text_input, "Ripeti").set_value("MisterNuova1")
 bottone(at, "Salva la password").click().run(); assert not at.exception, at.exception
-print("  pagina iniziale allenatore:", [s.value for s in at.subheader][:1], "| squadre:", at.selectbox(key="sq_categoria").options)
+print("  pagina iniziale allenatore:", [s.value for s in at.subheader][:1])
+assert [s.value for s in at.subheader][:1] == ["📊 La tua squadra"]
 print("  barra:", [m.value for m in at.sidebar.markdown][:1])
-print("  tabs rosa:", at.dataframe[-1].value.to_string() if at.dataframe else None)
 
 # 3. blocco dopo 5 tentativi
 at = login_app()

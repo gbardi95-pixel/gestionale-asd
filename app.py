@@ -707,7 +707,78 @@ def crediti_residui(etichetta, inizio, fine, tipo):
 # ---------------------------------------------------------
 # 1. DASHBOARD & ALERT SCADENZE
 # ---------------------------------------------------------
+def dashboard_allenatore():
+    """Dashboard ridotta dell'allenatore: certificati prima della prossima partita, situazione disciplinare, statistiche aggregate della squadra."""
+    st.subheader("📊 La tua squadra")
+    proprie = [c for c in CATEGORIE_LISTA if c in utente_corrente()["squadre"] and c != "STAFF"]
+    if not proprie:
+        st.info("Non hai ancora squadre assegnate: chiedi all'amministratore di indicarle nella pagina «Utenti e registro».")
+        return
+    cat = st.selectbox("Squadra", proprie, key="dash_all_squadra") if len(proprie) > 1 else proprie[0]
+    oggi = datetime.date.today().isoformat()
+    gioc = leggi_df(
+        "SELECT a.id, a.denominazione AS nome, c.scad FROM tesserati_calcio t JOIN anagrafiche a ON a.id = t.anagrafica_id "
+        "LEFT JOIN (SELECT anagrafica_id, MAX(data_scadenza) AS scad FROM certificati_medici GROUP BY anagrafica_id) c ON c.anagrafica_id = a.id "
+        "WHERE t.stato = 'ATTIVO' AND t.gioca = 1 AND t.categoria = ? ORDER BY a.denominazione", [cat])
+    nomi = {int(r.id): r.nome for r in gioc.itertuples()}
+    prossima = leggi_df("SELECT data, ora, avversario, squadra_casa, squadra_ospite FROM eventi_squadra WHERE tipo = 'PARTITA' AND categoria = ? AND data >= ? "
+                        "ORDER BY data, id LIMIT 1", [cat, oggi])
+    if prossima.empty:
+        limite = (datetime.date.today() + datetime.timedelta(days=30)).isoformat()
+        st.caption("Nessuna partita in calendario: controllo i certificati che scadono entro 30 giorni.")
+    else:
+        p = prossima.iloc[0]
+        limite = str(p["data"])
+        contro = f"{p['squadra_casa']} - {p['squadra_ospite']}" if valore_pulito(p["squadra_casa"]) else (f"contro {p['avversario']}" if valore_pulito(p["avversario"]) else "")
+        st.markdown(f"**Prossima partita:** {pd.to_datetime(limite).strftime('%d/%m/%Y')}" + (f" ore {p['ora']}" if valore_pulito(p["ora"]) else "") + (f" · {contro}" if contro else ""))
+
+    st.markdown("**🩺 Visite mediche da sistemare prima della partita**")
+    righe_cert = []
+    for r in gioc.itertuples():
+        if pd.isna(r.scad):
+            righe_cert.append((r.nome, "⛔ mancante", ""))
+        elif str(r.scad) < oggi:
+            righe_cert.append((r.nome, "⛔ scaduto", pd.to_datetime(r.scad).strftime("%d/%m/%Y")))
+        elif str(r.scad) < limite:
+            righe_cert.append((r.nome, "⚠️ scade prima della partita", pd.to_datetime(r.scad).strftime("%d/%m/%Y")))
+    if righe_cert:
+        st.dataframe(pd.DataFrame(righe_cert, columns=["Giocatore", "Situazione", "Scadenza"]), width="stretch", hide_index=True)
+    else:
+        st.success("Tutti i certificati sono validi fino alla prossima partita.")
+
+    st.markdown("**⚖️ Situazione disciplinare**")
+    situazioni = situazione_disciplinare(set(nomi), cat)
+    squalificati = [(nomi[a], t) for a, (stato, t) in situazioni.items() if stato == "SQUALIFICATO"]
+    diffidati = [(nomi[a], t) for a, (stato, t) in situazioni.items() if stato == "DIFFIDATO"]
+    if squalificati:
+        st.dataframe(pd.DataFrame(squalificati, columns=["⛔ Squalificati (non disponibili)", "Dettaglio"]), width="stretch", hide_index=True)
+    if diffidati:
+        st.dataframe(pd.DataFrame(diffidati, columns=["⚠️ A rischio squalifica per somma di ammonizioni", "Dettaglio"]), width="stretch", hide_index=True)
+    if not squalificati and not diffidati:
+        st.success("Nessun giocatore squalificato o diffidato. (Dipende dai comunicati importati nella pagina «Convocazioni e presenze».)")
+
+    st.markdown("**📈 Statistiche della squadra**")
+    ini, fin, etich = esercizio_corrente()
+    tab = leggi_df("SELECT t.evento_id, t.reti, t.assist, t.ammonizioni, t.espulso, t.anagrafica_id FROM tabellino_giocatori t JOIN eventi_squadra e ON e.id = t.evento_id "
+                   "WHERE e.categoria = ? AND e.data BETWEEN ? AND ?", [cat, str(ini), str(fin)])
+    pres = leggi_df("SELECT p.stato FROM presenze_evento p JOIN eventi_squadra e ON e.id = p.evento_id WHERE e.tipo = 'ALLENAMENTO' AND e.categoria = ? "
+                    "AND e.data BETWEEN ? AND ?", [cat, str(ini), str(fin)])
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("Partite con tabellino", int(tab["evento_id"].nunique()) if not tab.empty else 0)
+    m2.metric("Reti", int(tab["reti"].sum()) if not tab.empty else 0)
+    m3.metric("Ammonizioni", int(tab["ammonizioni"].sum()) if not tab.empty else 0)
+    m4.metric("Espulsioni", int(tab["espulso"].sum()) if not tab.empty else 0)
+    m5.metric("Presenza agli allenamenti", f"{round((pres['stato'] == 'PRESENTE').mean() * 100)}%" if not pres.empty else "da completare")
+    if not tab.empty and tab["reti"].sum() > 0:
+        marcatori = tab.groupby("anagrafica_id")["reti"].sum().sort_values(ascending=False).head(3)
+        st.caption("Migliori marcatori: " + ", ".join(f"{nomi.get(int(a), 'ex giocatore')} ({int(n)})" for a, n in marcatori.items() if n > 0))
+    st.caption(f"Esercizio {etich}. Il dettaglio per giocatore è nella pagina «Convocazioni e presenze».")
+
+
 def pagina_dashboard():
+    if utenti.limita_squadre(utente_corrente()["ruolo"]):
+        dashboard_allenatore()
+        return
     st.subheader("📊 Dashboard e scadenze")
 
     today = datetime.date.today().strftime("%Y-%m-%d")
@@ -5002,19 +5073,19 @@ MENU = {
     "🏠 Generale": [
         (pagina_dashboard, "Dashboard e scadenze", "📊", "dashboard"),
     ] + ([(pagina_account, "Il mio account", "👤", "account")] if ACCESSI_PERSONALI else []),
-    "👥 Tesserati e squadra": [
+    "🤝 Associazione": [
         (pagina_tesseramento, "Nuovo tesseramento", "📝", "tesseramento"),
         (pagina_soci, "Soci, atleti e dirigenti", "🏃", "soci"),
-        (pagina_distinte, "Distinte di gara", "📋", "distinte"),
-        (pagina_squadra, "Convocazioni e presenze", "📣", "convocazioni"),
     ],
-    "💶 Incassi e pagamenti": [
+    "⚽ Attività sportiva": [
+        (pagina_squadra, "Convocazioni e presenze", "📣", "convocazioni"),
+        (pagina_distinte, "Distinte di gara", "📋", "distinte"),
+        (pagina_lavoro_sportivo, "Collaboratori e rimborsi", "🧢", "collaboratori"),
+    ],
+    "💶 Tesoreria": [
         (pagina_ricevute, "Ricevute e quote", "📜", "ricevute"),
         (pagina_sponsor, "Sponsor e pubblicità", "🏢", "sponsor"),
         (pagina_spese, "Spese e fornitori", "🧾", "spese"),
-        (pagina_lavoro_sportivo, "Collaboratori e rimborsi", "⚽", "collaboratori"),
-    ],
-    "📚 Contabilità": [
         (pagina_prima_nota, "Prima nota e rendiconto", "📖", "prima-nota"),
         (pagina_preventivo, "Preventivo e consuntivo", "🎯", "preventivo"),
     ],

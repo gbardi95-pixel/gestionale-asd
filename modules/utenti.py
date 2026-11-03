@@ -17,10 +17,10 @@ PAGINE_RUOLO = {
     "ADMIN": None,
     "SEGRETERIA": {"dashboard", "account", "tesseramento", "soci", "distinte", "convocazioni", "ricevute", "sponsor", "spese", "collaboratori",
                    "prima-nota", "preventivo", "parametri", "piano-dei-conti", "backup"},
-    "ALLENATORE": {"account", "convocazioni", "distinte"},
+    "ALLENATORE": {"dashboard", "account", "convocazioni", "distinte"},
     "CONSULTAZIONE": {"dashboard", "account", "prima-nota", "preventivo"},
 }
-PAGINA_INIZIALE = {"ALLENATORE": "convocazioni"}  # gli altri ruoli partono dalla dashboard
+PAGINA_INIZIALE = {}  # tutti i ruoli partono dalla dashboard (quella dell'allenatore è ridotta)
 
 LUNGHEZZA_MINIMA = 8
 MAX_TENTATIVI = 5
