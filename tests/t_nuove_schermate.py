@@ -51,10 +51,17 @@ c.execute("INSERT INTO collaboratori_sportivi (anagrafica_id, mansione, tipo_con
 c.commit()
 at = nuovo(f, "pagina_soci")
 assert not at.exception, at.exception
+assert at.session_state["soci_scheda"].startswith("📋"), "parte dall'elenco"
+at.session_state["soci_scheda"] = "✏️ Modifica / Elimina Scheda"
+at.run()
+assert not at.exception, at.exception
 sel = campo(at.selectbox, "Seleziona Persona da Modificare")
 assert sel.value is None
 sel.set_value(sel.options[0]).run()
 assert not at.exception, at.exception
+# dopo la scelta (come dopo un salvataggio) si resta nella scheda di modifica e l'indirizzo la ricorda
+assert at.session_state["soci_scheda"].startswith("✏️") and at.query_params["scheda"] == ["2"] or at.query_params["scheda"] == "2", at.query_params
+assert any("Modifica / Elimina Dati" in m.value for m in at.markdown)
 at = nuovo(f, "pagina_lavoro_sportivo")
 assert not at.exception, at.exception
 sel = campo(at.selectbox, "Collaboratore")

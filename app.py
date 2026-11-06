@@ -976,19 +976,30 @@ def pagina_dashboard():
 # ---------------------------------------------------------
 # 2. SOCI, ATLETI & DIRIGENZA
 # ---------------------------------------------------------
+def scheda_attiva(etichette, chiave):
+    """Selettore di schede che ricorda dove sei, anche dopo un salvataggio o se il telefono ricarica la pagina (la scheda resta nell'indirizzo).
+    Al posto di st.tabs, che su telefono può tornare alla prima scheda. Si mostra solo il contenuto della scheda scelta."""
+    if chiave not in st.session_state:
+        try:
+            posizione = int(st.query_params.get("scheda", 0))
+        except (TypeError, ValueError):
+            posizione = 0
+        st.session_state[chiave] = etichette[posizione] if 0 <= posizione < len(etichette) else etichette[0]
+    scelta = st.pills("Sezione", etichette, key=chiave, label_visibility="collapsed") or etichette[0]
+    if st.query_params.get("scheda") != str(etichette.index(scelta)):
+        st.query_params["scheda"] = str(etichette.index(scelta))
+    return scelta
+
+
 def pagina_soci():
     st.subheader("🏃 Gestione Anagrafiche: Soci, Dirigenza e Atleti")
 
-    tab_list, tab_add, tab_edit, tab_libro = st.tabs([
-        "📋 Elenco Anagrafiche & Filtri",
-        "➕ Inserimento & Importazione",
-        "✏️ Modifica / Elimina Scheda",
-        "📒 Libro soci"
-    ])
+    schede_soci = ["📋 Elenco Anagrafiche & Filtri", "➕ Inserimento & Importazione", "✏️ Modifica / Elimina Scheda", "📒 Libro soci"]
+    scheda = scheda_attiva(schede_soci, "soci_scheda")
 
     RUOLI_LISTA = ["Presidente", "Vice Presidente", "Consigliere", "Dirigente", "Dirigente Accompagnatore", "Segretario", "Allenatore", "Portiere", "Difensore", "Centrocampista", "Attaccante", "Socio"]
 
-    with tab_list:
+    if scheda == schede_soci[0]:
         e1, e2 = st.columns([1, 2])
         filtro_cat = e1.selectbox("Squadra", ["TUTTI"] + CATEGORIE_LISTA, format_func=lambda c: "Tutte" if c == "TUTTI" else ETICHETTE_SQUADRE.get(c, c))
         cerca_anag = e2.text_input("Cerca per nome o codice fiscale", key="soci_cerca")
@@ -1070,7 +1081,7 @@ def pagina_soci():
                     except Exception as ex_g:
                         st.error(f"Errore durante il salvataggio: {ex_g}")
 
-    with tab_add:
+    if scheda == schede_soci[1]:
         with st.expander("➕ Inserisci Singola Persona / Dirigente / Atleta"):
             with st.form("nuovo_tesserato_form", clear_on_submit=True):
                 c1, c2, c3 = st.columns(3)
@@ -1300,7 +1311,7 @@ def pagina_soci():
                 except Exception as e:
                     st.error(f"Errore durante la lettura del file Excel: {e}")
 
-    with tab_edit:
+    if scheda == schede_soci[2]:
         st.markdown("### ✏️ Modifica / Elimina Dati Scheda Anagrafica")
         df_people = leggi_df(
             "SELECT id, denominazione, codice_fiscale FROM anagrafiche WHERE tipo IN ('SOCIO_CALCIATORE', 'ALTRO') ORDER BY denominazione")
@@ -1518,7 +1529,7 @@ def pagina_soci():
         else:
             st.info("Nessuna anagrafica presente da modificare.")
 
-    with tab_libro:
+    if scheda == schede_soci[3]:
         st.markdown("#### 📒 Libro soci")
         st.caption("Chi ha una tessera di questa società nell'esercizio scelto. Restano fuori chi è socio di un'altra società "
                    "e chi ha solo la scheda attività. Le date di ammissione e di uscita si correggono nella scheda della persona.")
@@ -2057,6 +2068,30 @@ def pagina_distinte():
                              r["ruolo"], r["data_nascita"], r["tipo_tessera"] or None, r["numero_tessera"] or None,
                              r["tipo_documento"] or None, r["numero_documento"] or None],
                         )
+                    # La convocazione segue la distinta (e viceversa): stessa partita, stessi giocatori, anche se la distinta è stata fatta per prima
+                    ev_coll = int(conv_sel.id) if conv_sel is not None else (int(testata_sal["evento_id"]) if did and testata_sal.get("evento_id") else None)
+                    if ev_coll is None:
+                        cats = [pers[r["anagrafica_id"]].get("categoria") for r in righe_gioc]
+                        cats = [c for c in cats if c and c != "STAFF"]
+                        if cats:
+                            cat_ev = max(set(cats), key=cats.count)
+                            trovato = w_conn.execute("SELECT id FROM eventi_squadra WHERE tipo = 'PARTITA' AND categoria = ? AND data = ? ORDER BY id LIMIT 1",
+                                                     [cat_ev, data_iso_gara]).fetchone()
+                            if trovato:
+                                ev_coll = int(trovato[0])
+                            else:
+                                avversario_ev = squadra_ospite.strip() if squadra_casa.strip() == NOME_SOCIETA else squadra_casa.strip()
+                                ev_coll = int(w_conn.execute(
+                                    "INSERT INTO eventi_squadra (tipo, data, ora, categoria, avversario, luogo, squadra_casa, squadra_ospite, competizione) "
+                                    "VALUES ('PARTITA', ?, ?, ?, ?, ?, ?, ?, ?)",
+                                    [data_iso_gara, ora.strip() or None, cat_ev, avversario_ev or None, campo.strip() or None, squadra_casa.strip() or None,
+                                     squadra_ospite.strip() or None, competizione.strip() or None]).lastrowid)
+                            w_conn.execute("UPDATE distinte_gara SET evento_id = ? WHERE id = ?", [ev_coll, id_salvata])
+                    if ev_coll is not None:
+                        w_conn.execute("DELETE FROM presenze_evento WHERE evento_id = ? AND stato = 'CONVOCATO'", [ev_coll])
+                        for r in righe_gioc:
+                            w_conn.execute("INSERT OR IGNORE INTO presenze_evento (evento_id, anagrafica_id, stato) VALUES (?, ?, 'CONVOCATO')",
+                                           [ev_coll, int(r["anagrafica_id"])])
                     # Documento e tipo di tessera tornano in anagrafica, così la prossima distinta li propone già compilati
                     for r in righe_gioc + righe_dir:
                         if r["tipo_documento"] or r["numero_documento"]:
@@ -4771,6 +4806,14 @@ def pagina_squadra():
                                 w_conn.execute("UPDATE eventi_squadra SET data = ?, ora = ?, avversario = ?, luogo = ?, ritrovo_ora = ?, ritrovo_luogo = ?, note = ? WHERE id = ?",
                                                [str(data_cv), ora_cv.strip() or None, avv_cv.strip() or None, luogo_cv.strip() or None,
                                                 rit_ora_cv.strip() or None, rit_luogo_cv.strip() or None, note_cv.strip() or None, ev])
+                            elif w_conn.execute("SELECT 1 FROM eventi_squadra WHERE tipo = 'PARTITA' AND categoria = ? AND data = ?", [cat_sq, str(data_cv)]).fetchone():
+                                # la partita esiste già (per esempio creata dalla distinta): si aggiunge la convocazione a quella
+                                ev = int(w_conn.execute("SELECT id FROM eventi_squadra WHERE tipo = 'PARTITA' AND categoria = ? AND data = ? ORDER BY id LIMIT 1",
+                                                        [cat_sq, str(data_cv)]).fetchone()[0])
+                                w_conn.execute("UPDATE eventi_squadra SET ora = COALESCE(?, ora), avversario = COALESCE(?, avversario), luogo = COALESCE(?, luogo), "
+                                               "ritrovo_ora = ?, ritrovo_luogo = ?, note = ? WHERE id = ?",
+                                               [ora_cv.strip() or None, avv_cv.strip() or None, luogo_cv.strip() or None,
+                                                rit_ora_cv.strip() or None, rit_luogo_cv.strip() or None, note_cv.strip() or None, ev])
                             else:
                                 ev = w_conn.execute(
                                     "INSERT INTO eventi_squadra (tipo, data, ora, categoria, avversario, luogo, ritrovo_ora, ritrovo_luogo, note) "
@@ -4778,7 +4821,7 @@ def pagina_squadra():
                                     [str(data_cv), ora_cv.strip() or None, cat_sq, avv_cv.strip() or None, luogo_cv.strip() or None,
                                      rit_ora_cv.strip() or None, rit_luogo_cv.strip() or None, note_cv.strip() or None]).lastrowid
                             for aid in conv_cv:
-                                w_conn.execute("INSERT INTO presenze_evento (evento_id, anagrafica_id, stato) VALUES (?, ?, 'CONVOCATO')", [ev, int(aid)])
+                                w_conn.execute("INSERT OR REPLACE INTO presenze_evento (evento_id, anagrafica_id, stato) VALUES (?, ?, 'CONVOCATO')", [ev, int(aid)])
                         st.session_state["flash"] = f"Convocazione salvata: {len(conv_cv)} giocatori."
                         st.session_state["sq_conv_sel_id"] = ev
                         st.rerun()
