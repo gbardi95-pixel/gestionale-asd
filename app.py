@@ -22,7 +22,7 @@ from modules.db import ERRORE_ESERCIZIO_CHIUSO, PIANO_DEI_CONTI_ASD, _turso_cred
 # ---------------------------------------------------------
 # Incrementare a ogni modifica dello schema del DB: forza init_db() (e le migrazioni)
 # anche quando Streamlit Cloud aggiorna il codice senza riavviare il server.
-VERSIONE_SCHEMA_DB = 20
+VERSIONE_SCHEMA_DB = 21
 
 @st.cache_resource(show_spinner="Avvio dell'app…")
 def _setup_database(versione_schema):
@@ -524,30 +524,73 @@ def pdf_ricevuta(ricevuta_id, societa_tuple):
         "causale": testo(r["causale"]), "importo": float(r["importo"]), "pagamento": testo(r["modalita_pagamento"]) or "da completare",
         "bollo": float(r["marca_da_bollo"] or 0)})
 
-def emetti_ricevuta(w_conn, numero, data, anagrafica_id, tipo_causale, dettaglio, importo, pagamento, pregresso=False,
-                    versante_nome="", versante_cf="", nome_socio=""):
-    """Registra la ricevuta, la scrittura di prima nota e la copia del PDF com'è al momento dell'emissione."""
-    causale = f"{tipo_causale} - {dettaglio}".strip(" -")
+def righe_incasso(w_conn, tipo_causale, importo, pagamento, pregresso):
+    """Righe di prima nota di una ricevuta: entra in cassa/banca, esce un ricavo (o un credito verso il socio)."""
     cod_cassa = {"BONIFICO": "10.01.001", "POS": "10.01.001", "PAYPAL": "10.01.003"}.get(pagamento, "10.01.002")
     cod_ricavo = "50.01.003" if tipo_causale == CAUSALE_EROGAZIONE else ("50.01.001" if "Annua" in tipo_causale else "50.01.002")
     if pregresso:
         cod_ricavo = esercizio.CONTO_CREDITI_SOCI  # si incassa un credito, non un nuovo ricavo
+    return [(get_conto_id(w_conn, cod_cassa), f"Incasso {tipo_causale}", float(importo), 0.0),
+            (get_conto_id(w_conn, cod_ricavo), "Incasso credito verso socio" if pregresso else "Ricavo Istituzionale", 0.0, float(importo))]
+
+def emetti_ricevuta(w_conn, numero, data, anagrafica_id, tipo_causale, dettaglio, importo, pagamento, pregresso=False,
+                    versante_nome="", versante_cf="", nome_socio=""):
+    """Registra la ricevuta, la scrittura di prima nota e la copia del PDF com'è al momento dell'emissione."""
+    causale = f"{tipo_causale} - {dettaglio}".strip(" -")
     rid = w_conn.execute(
         "INSERT INTO ricevute_istituzionali (numero_ricevuta, data_emissione, anagrafica_id, causale, importo, modalita_pagamento, marca_da_bollo, "
         "credito_pregresso, versante_nome, versante_cf) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         # bollo 0: ASD esenti dall'imposta di bollo, art. 27-bis Tabella B DPR 642/1972 (art. 90 c. 6 L. 289/2002)
         [str(numero).strip(), str(data), int(anagrafica_id), causale, float(importo), str(pagamento), 0.0, int(pregresso),
          (versante_nome or "").strip() or None, (versante_cf or "").strip().upper() or None]).lastrowid
-    post_journal(w_conn, data, numero, f"Incasso {tipo_causale} - {nome_socio}".strip(" -"), "ISTITUZIONALE", [
-        (get_conto_id(w_conn, cod_cassa), f"Incasso {tipo_causale}", float(importo), 0.0),
-        (get_conto_id(w_conn, cod_ricavo), "Incasso credito verso socio" if pregresso else "Ricavo Istituzionale", 0.0, float(importo))])
-    den, cf = w_conn.execute("SELECT denominazione, codice_fiscale FROM anagrafiche WHERE id = ?", [int(anagrafica_id)]).fetchone()
-    pdf = ricevuta_pdf.genera(dati_societa(), {
-        "numero": str(numero).strip(), "data": pd.Timestamp(data).strftime("%d/%m/%Y"), "praticante": den or "", "praticante_cf": cf or "",
-        "versante": (versante_nome or "").strip(), "versante_cf": (versante_cf or "").strip().upper(), "causale": causale,
-        "importo": float(importo), "pagamento": str(pagamento), "bollo": 0.0})
-    w_conn.execute("UPDATE ricevute_istituzionali SET pdf_base64 = ? WHERE id = ?", [base64.b64encode(pdf).decode("ascii"), rid])
+    post_journal(w_conn, data, numero, f"Incasso {tipo_causale} - {nome_socio}".strip(" -"), "ISTITUZIONALE",
+                 righe_incasso(w_conn, tipo_causale, importo, pagamento, pregresso))
+    salva_pdf_ricevuta(w_conn, rid)
     return rid
+
+def salva_pdf_ricevuta(w_conn, rid):
+    """Rifà e salva la copia del PDF di una ricevuta con i dati che ha adesso."""
+    r = w_conn.execute(
+        "SELECT r.numero_ricevuta, r.data_emissione, r.causale, r.importo, r.modalita_pagamento, r.versante_nome, r.versante_cf, a.denominazione, a.codice_fiscale "
+        "FROM ricevute_istituzionali r JOIN anagrafiche a ON a.id = r.anagrafica_id WHERE r.id = ?", [int(rid)]).fetchone()
+    pdf = ricevuta_pdf.genera(dati_societa(), {
+        "numero": str(r[0]).strip(), "data": pd.Timestamp(r[1]).strftime("%d/%m/%Y"), "praticante": r[7] or "", "praticante_cf": r[8] or "",
+        "versante": (r[5] or "").strip(), "versante_cf": (r[6] or "").strip().upper(), "causale": r[2],
+        "importo": float(r[3]), "pagamento": str(r[4]), "bollo": 0.0})
+    w_conn.execute("UPDATE ricevute_istituzionali SET pdf_base64 = ? WHERE id = ?", [base64.b64encode(pdf).decode("ascii"), int(rid)])
+
+def movimento_ricevuta(conn, numero, data):
+    """Id della scrittura di prima nota nata da una ricevuta (stesso numero e stessa data), None se non c'è."""
+    r = conn.execute("SELECT id FROM movimenti_prima_nota WHERE numero_documento = ? AND data_registrazione = ? AND causale LIKE 'Incasso%' ORDER BY id LIMIT 1",
+                     [str(numero).strip(), str(data)[:10]]).fetchone()
+    return int(r[0]) if r else None
+
+def modifica_ricevuta(w_conn, rid, numero, data, anagrafica_id, tipo_causale, dettaglio, importo, pagamento, pregresso, versante_nome, versante_cf, nome_socio):
+    """Corregge una ricevuta già emessa: aggiorna anche la scrittura di prima nota collegata e la copia del PDF."""
+    v = w_conn.execute("SELECT numero_ricevuta, data_emissione FROM ricevute_istituzionali WHERE id = ?", [int(rid)]).fetchone()
+    mov_id = movimento_ricevuta(w_conn, v[0], v[1])
+    causale = f"{tipo_causale} - {dettaglio}".strip(" -")
+    w_conn.execute(
+        "UPDATE ricevute_istituzionali SET numero_ricevuta = ?, data_emissione = ?, anagrafica_id = ?, causale = ?, importo = ?, modalita_pagamento = ?, "
+        "credito_pregresso = ?, versante_nome = ?, versante_cf = ? WHERE id = ?",
+        [str(numero).strip(), str(data), int(anagrafica_id), causale, float(importo), str(pagamento), int(pregresso),
+         (versante_nome or "").strip() or None, (versante_cf or "").strip().upper() or None, int(rid)])
+    righe = righe_incasso(w_conn, tipo_causale, importo, pagamento, pregresso)
+    descrizione = f"Incasso {tipo_causale} - {nome_socio}".strip(" -")
+    if mov_id is None:
+        post_journal(w_conn, data, numero, descrizione, "ISTITUZIONALE", righe)
+    else:
+        riscrivi_movimento(w_conn, mov_id, righe, data_reg=data, num_doc=numero, causale=descrizione)
+    salva_pdf_ricevuta(w_conn, rid)
+
+def elimina_ricevuta(w_conn, rid):
+    """Elimina una ricevuta e la sua scrittura di prima nota."""
+    v = w_conn.execute("SELECT numero_ricevuta, data_emissione FROM ricevute_istituzionali WHERE id = ?", [int(rid)]).fetchone()
+    mov_id = movimento_ricevuta(w_conn, v[0], v[1])
+    if mov_id is not None:
+        w_conn.execute("DELETE FROM righe_prima_nota WHERE movimento_id = ?", [mov_id])
+        w_conn.execute("DELETE FROM movimenti_prima_nota WHERE id = ?", [mov_id])
+    w_conn.execute("DELETE FROM ricevute_istituzionali WHERE id = ?", [int(rid)])
 
 def numero_successivo(numero):
     """Numero di ricevuta che segue (es. 7/2026 -> 8/2026), None se il formato non è numero/anno."""
@@ -976,18 +1019,25 @@ def pagina_dashboard():
 # ---------------------------------------------------------
 # 2. SOCI, ATLETI & DIRIGENZA
 # ---------------------------------------------------------
+def ripristina_scelta(chiave, predefinita):
+    """Un tocco sulla voce già scelta la deselezionerebbe e la pagina tornerebbe alla prima: si rimette l'ultima scelta."""
+    if st.session_state.get(chiave) is None:
+        st.session_state[chiave] = st.session_state.get(chiave + "__u", predefinita)
+
 def scheda_attiva(etichette, chiave):
     """Selettore di schede che ricorda dove sei, anche dopo un salvataggio o se il telefono ricarica la pagina (la scheda resta nell'indirizzo).
     Al posto di st.tabs, che su telefono può tornare alla prima scheda. Si mostra solo il contenuto della scheda scelta."""
     if chiave not in st.session_state:
         try:
-            posizione = int(st.query_params.get("scheda", 0))
+            posizione = int(st.query_params.get(chiave, 0))
         except (TypeError, ValueError):
             posizione = 0
         st.session_state[chiave] = etichette[posizione] if 0 <= posizione < len(etichette) else etichette[0]
+    ripristina_scelta(chiave, etichette[0])
     scelta = st.pills("Sezione", etichette, key=chiave, label_visibility="collapsed") or etichette[0]
-    if st.query_params.get("scheda") != str(etichette.index(scelta)):
-        st.query_params["scheda"] = str(etichette.index(scelta))
+    st.session_state[chiave + "__u"] = scelta
+    if st.query_params.get(chiave) != str(etichette.index(scelta)):
+        st.query_params[chiave] = str(etichette.index(scelta))
     return scelta
 
 
@@ -1601,9 +1651,10 @@ def pagina_parametri():
     ini_par, fin_par = periodi_par[es_par]
     df_par = parametri_esercizio(es_par)
 
-    tab_valori, tab_quote, tab_soll, tab_costo = st.tabs(["💶 Costi e quote", "📋 Situazione quote", "📣 Solleciti", "🏛️ Costo tesseramenti"])
+    schede_tariffe = ["💶 Costi e quote", "📋 Situazione quote", "📣 Solleciti", "🏛️ Costo tesseramenti"]
+    scheda_tariffe = scheda_attiva(schede_tariffe, "tariffe_scheda")
 
-    with tab_valori:
+    if scheda_tariffe == schede_tariffe[0]:
         st.caption("Costo per la società = quanto si paga all'ente per ogni tesseramento. Quota richiesta = quanto la società chiede alla persona. "
                    "Chi ha una quota personalizzata nella sua scheda (sezione Soci) paga quella.")
         if df_par.empty:
@@ -1665,7 +1716,7 @@ def pagina_parametri():
 
     df_tess_par, df_vers_par = dati_quote(ini_par, fin_par)
 
-    with tab_quote:
+    if scheda_tariffe == schede_tariffe[1]:
         df_sit = quote.situazione_quote(df_tess_par, df_par, df_vers_par)
         q1, q2, q3 = st.columns(3)
         q1.metric("Quote dovute", f"€ {df_sit['Dovuto (€)'].sum():,.2f}")
@@ -1677,7 +1728,7 @@ def pagina_parametri():
         st.caption(f"Tesserati attivi. Versato = ricevute emesse dal {ini_par.strftime('%d/%m/%Y')} al {fin_par.strftime('%d/%m/%Y')} "
                    "(escluse quelle che incassano quote degli esercizi precedenti).")
 
-    with tab_soll:
+    if scheda_tariffe == schede_tariffe[2]:
         st.markdown(f"#### 📣 Solleciti per le quote della stagione {es_par}")
         st.caption("Per ognuno trovi il messaggio pronto: copialo con l'icona in alto a destra del riquadro, oppure aprilo "
                    "direttamente in WhatsApp o nella posta. Telefono ed email si inseriscono nella scheda della persona (Soci).")
@@ -1732,7 +1783,7 @@ def pagina_parametri():
                     else:
                         w2.caption("Email mancante")
 
-    with tab_costo:
+    if scheda_tariffe == schede_tariffe[3]:
         df_costo = quote.costo_tesseramenti(df_tess_par, df_par)
         totale_costo = float(df_costo["Totale (€)"].sum()) if not df_costo.empty else 0.0
         st.metric(f"Totale dovuto all'ente per la stagione {es_par}", f"€ {totale_costo:,.2f}")
@@ -1740,9 +1791,10 @@ def pagina_parametri():
         st.caption("Calcolato sui tesserati attivi di oggi e sui costi dei parametri. Iscrizione e cauzione sono contate una volta "
                    "per ogni squadra con tesserati (escluso lo staff).")
 
-        # Tre gruppi con conti diversi: la cauzione è un deposito che tornerà indietro, non un costo
+        # Quattro gruppi con conti diversi: la cauzione è un deposito che tornerà indietro, non un costo
         gruppi_pag = [
-            ("tess", "Tesseramenti e affiliazione", quote.CONTO_TESSERAMENTI),
+            ("tess", "Tesseramenti", quote.CONTO_TESSERAMENTI),
+            ("affil", "Affiliazione", quote.CONTO_VOCE["AFFILIAZIONE"]),
             ("iscr", "Iscrizione campionati", quote.CONTO_VOCE["ISCRIZIONE_CAMPIONATO"]),
             ("cauz", "Cauzioni campionati", quote.CONTO_VOCE["CAUZIONE"]),
         ]
@@ -1751,7 +1803,7 @@ def pagina_parametri():
             SELECT p.codice, COALESCE(SUM(r.dare), 0) AS tot FROM righe_prima_nota r
             JOIN movimenti_prima_nota m ON m.id = r.movimento_id
             JOIN piano_dei_conti p ON p.id = r.sottoconto_id
-            WHERE p.codice IN (?, ?, ?) AND m.data_registrazione BETWEEN ? AND ? AND m.numero_documento NOT LIKE 'APERTURA%'
+            WHERE p.codice IN (?, ?, ?, ?) AND m.data_registrazione BETWEEN ? AND ? AND m.numero_documento NOT LIKE 'APERTURA%'
             GROUP BY p.codice
             """, [g[2] for g in gruppi_pag] + [str(ini_par), str(fin_par)])
         gia = {r.codice: float(r.tot) for r in registrato.itertuples()}
@@ -1766,7 +1818,7 @@ def pagina_parametri():
             data_pag = p1.date_input("Data pagamento", format="DD/MM/YYYY")
             modo_pag = p2.selectbox("Pagato con", ["BONIFICO", "POS", "PAYPAL", "CONTANTI"])
             importi_pag = {}
-            colonne_pag = st.columns(3)
+            colonne_pag = st.columns(len(gruppi_pag))
             for col, (chiave, nome, conto) in zip(colonne_pag, gruppi_pag):
                 importi_pag[conto] = col.number_input(f"{nome} (€)", min_value=0.0, step=10.0, key=f"pag_{es_par}_{chiave}",
                                                       value=max(round(dovuto_gruppo[conto] - gia.get(conto, 0.0), 2), 0.0))
@@ -1808,7 +1860,7 @@ def pagina_parametri():
                                     acc_fin = get_conto_id(w_conn, {"BONIFICO": "10.01.001", "PAYPAL": "10.01.003"}.get(modo_rest, "10.01.002"))
                                     righe_rest.append((acc_fin, "Cauzione restituita", float(rest), 0.0))
                                 if trattenuto > 0:
-                                    righe_rest.append((get_conto_id(w_conn, quote.CONTO_VOCE["ISCRIZIONE_CAMPIONATO"]), "Multe e sanzioni trattenute dalla cauzione",
+                                    righe_rest.append((get_conto_id(w_conn, quote.CONTO_MULTE), "Multe e sanzioni trattenute dalla cauzione",
                                                        float(trattenuto), 0.0))
                                 righe_rest.append((get_conto_id(w_conn, quote.CONTO_VOCE["CAUZIONE"]), "Chiusura cauzione", 0.0, totale_rest))
                                 post_journal(w_conn, data_rest, "Cauzione", "Restituzione cauzione campionato", "ISTITUZIONALE", righe_rest)
@@ -1840,9 +1892,10 @@ def pagina_distinte():
         df_archivio = df_archivio[df_archivio["id"].isin(proprie) | (df_archivio["giocatori"] == 0)]
     df_modello = leggi_df("SELECT nome_file, caricato_il FROM modelli_documenti WHERE nome = 'distinta_gara'")
 
-    tab_compila, tab_archivio, tab_modello = st.tabs(["📝 Compila distinta", "📚 Archivio", "⚙️ Modello Word"])
+    schede_distinte = ["📝 Compila distinta", "📚 Archivio", "⚙️ Modello Word"]
+    scheda_distinte = scheda_attiva(schede_distinte, "distinte_scheda")
 
-    with tab_compila:
+    if scheda_distinte == schede_distinte[0]:
         etichette = {0: "➕ Nuova distinta"}
         # Convocazioni fatte dalla parte sportiva che non hanno ancora una distinta: la segreteria le trova già pronte
         df_conv = leggi_df(
@@ -2119,7 +2172,7 @@ def pagina_distinte():
             except Exception as ex_docx:
                 st.error(f"Errore nella compilazione del modello Word: {ex_docx}")
 
-    with tab_archivio:
+    if scheda_distinte == schede_distinte[1]:
         if df_archivio.empty:
             st.info("Nessuna distinta salvata.")
         else:
@@ -2147,7 +2200,7 @@ def pagina_distinte():
                 except Exception as ex_del:
                     st.error(f"Errore nell'eliminazione: {ex_del}")
 
-    with tab_modello:
+    if scheda_distinte == schede_distinte[2]:
         if df_modello.empty:
             st.info("In uso: modello generico del gestionale. Puoi caricare il modello Word del tuo ente con i segnaposto.")
         else:
@@ -2339,6 +2392,75 @@ def pagina_ricevute():
         vuoto = lambda v: "" if v is None or pd.isna(v) else str(v)
         azioni_ricevute([(int(r_sel["id"]), r_sel["N. Ricevuta"], r_sel["Causale"], float(r_sel["Importo (€)"]))],
                         r_sel["Socio"], vuoto(r_sel["telefono"]), vuoto(r_sel["email"]), "ric_reg")
+        modifica_ricevuta_ui(int(r_sel["id"]), df_soci)
+
+def modifica_ricevuta_ui(rid, df_soci):
+    """Riquadro per correggere o eliminare la ricevuta scelta nel registro."""
+    ric = leggi_df("SELECT * FROM ricevute_istituzionali WHERE id = ?", [int(rid)]).iloc[0]
+    tipi = ["Quota Associativa Annua", "Quota Iscrizione e Frequenza Campionato", "Contributo Istituzionale Straordinario", CAUSALE_EROGAZIONE]
+    tipo_att = next((t for t in tipi if str(ric["causale"]).startswith(t)), None)
+    if tipo_att is None:  # causale scritta in altro modo: la si tiene intera come tipologia
+        tipo_att = str(ric["causale"])
+        tipi = tipi + [tipo_att]
+    dettaglio_att = str(ric["causale"])[len(tipo_att):].lstrip(" -")
+    persone = {f"{r['denominazione']} (CF: {r['codice_fiscale'] or 'N.D.'})": int(r["id"]) for _, r in df_soci.iterrows()}
+    if int(ric["anagrafica_id"]) not in persone.values():
+        den = leggi_df("SELECT denominazione FROM anagrafiche WHERE id = ?", [int(ric["anagrafica_id"])])["denominazione"].iloc[0]
+        persone = {f"{den} (CF: N.D.)": int(ric["anagrafica_id"]), **persone}
+    nomi_persone = list(persone)
+    idx_persona = list(persone.values()).index(int(ric["anagrafica_id"]))
+    pagamenti = ["BONIFICO", "POS", "PAYPAL", "CONTANTI"]
+    testo = lambda v: "" if v is None or pd.isna(v) else str(v)
+    with st.expander("✏️ Correggi o elimina questa ricevuta"):
+        st.caption("Se cambi data, importo, tipologia o modalità di pagamento, si aggiorna anche la registrazione in Prima nota e il PDF. "
+                   "Se la ricevuta era già stata consegnata, riconsegna il PDF corretto.")
+        k = f"ric_mod_{rid}_"
+        with st.form(f"modifica_ricevuta_{rid}"):
+            c1, c2, c3 = st.columns(3)
+            data_m = c1.date_input("Data emissione", value=pd.to_datetime(ric["data_emissione"]).date(), format="DD/MM/YYYY", key=k + "data")
+            num_m = c2.text_input("Numero ricevuta", value=testo(ric["numero_ricevuta"]), key=k + "num")
+            persona_m = c3.selectbox("Persona", nomi_persone, index=idx_persona, key=k + "persona")
+            c4, c5, c6 = st.columns(3)
+            tipo_m = c4.selectbox("Tipologia", tipi, index=tipi.index(tipo_att), key=k + "tipo")
+            det_m = c5.text_input("Dettaglio / Anno Sociale", value=dettaglio_att, key=k + "det")
+            imp_m = c6.number_input("Importo (€)", min_value=0.01, step=10.0, value=float(ric["importo"]), key=k + "imp")
+            pag_att = testo(ric["modalita_pagamento"])
+            pag_m = st.selectbox("Modalità pagamento", pagamenti, index=pagamenti.index(pag_att) if pag_att in pagamenti else 3, key=k + "pag")
+            v1, v2 = st.columns(2)
+            vers_m = v1.text_input("Pagato da (solo se diverso)", value=testo(ric["versante_nome"]), key=k + "vn")
+            vers_cf_m = v2.text_input("Codice fiscale di chi ha pagato", value=testo(ric["versante_cf"]), key=k + "vc")
+            preg_m = st.checkbox("Incasso di una quota degli esercizi precedenti (già inserita tra i crediti di apertura)",
+                                 value=bool(ric["credito_pregresso"]), key=k + "preg")
+            if st.form_submit_button("💾 Salva le correzioni", type="primary"):
+                anno_m = str(data_m.year)
+                errore_num = None
+                if f"/{anno_m}" not in num_m:
+                    errore_num = f"Il numero '{num_m.strip()}' non contiene l'anno della data ({anno_m}): correggilo, es. 1/{anno_m}."
+                elif num_m.strip() != testo(ric["numero_ricevuta"]).strip() and get_ro_conn().execute(
+                        "SELECT COUNT(*) FROM ricevute_istituzionali WHERE numero_ricevuta = ? AND id <> ?", [num_m.strip(), int(rid)]).fetchone()[0]:
+                    errore_num = f"Il numero '{num_m.strip()}' è già stato usato: scegline un altro."
+                if preg_m and tipo_m == CAUSALE_EROGAZIONE:
+                    st.error("Un'erogazione liberale non incassa quote degli esercizi precedenti: togli la spunta sulla quota pregressa.")
+                elif errore_num:
+                    st.error(errore_num)
+                else:
+                    try:
+                        with db_write() as w_conn:
+                            modifica_ricevuta(w_conn, rid, num_m, data_m, persone[persona_m], tipo_m, det_m.strip(), imp_m, pag_m, preg_m,
+                                              vers_m, vers_cf_m, persona_m.split(" (CF:")[0])
+                        st.session_state["flash"] = f"Ricevuta N. {num_m.strip()} corretta. Il PDF è stato rifatto."
+                        st.rerun()
+                    except Exception as ex_m:
+                        st.error(f"Errore durante il salvataggio: {ex_m}")
+        conferma = st.checkbox("Confermo di voler eliminare questa ricevuta (e la sua registrazione in Prima nota)", key=k + "conferma")
+        if st.button("🗑️ Elimina la ricevuta", key=k + "elimina", disabled=not conferma):
+            try:
+                with db_write() as w_conn:
+                    elimina_ricevuta(w_conn, rid)
+                st.session_state["flash"] = f"Ricevuta N. {testo(ric['numero_ricevuta'])} eliminata."
+                st.rerun()
+            except Exception as ex_e:
+                st.error(f"Errore durante l'eliminazione: {ex_e}")
 
 def pulsante_condividi(file_pdf, testo, chiave):
     """Pulsante che apre il menu «Condividi» del telefono con i PDF già allegati (WhatsApp, email, …).
@@ -2681,14 +2803,15 @@ CONTI_PAGAMENTO_COMPENSI = {"BONIFICO": "10.01.001", "PAYPAL": "10.01.003", "CON
 def pagina_lavoro_sportivo():
     st.subheader("⚽ Gestione Staff Tecnico, Compensi Sportivi e Trasferte Campionato")
 
-    tab_coll, tab_comp, tab_riep, tab_rimb = st.tabs(["👥 Collaboratori", "💶 Compensi", "📊 Riepilogo annuale", "🚗 Rimborsi trasferta"])
+    schede_collab = ["👥 Collaboratori", "💶 Compensi", "📊 Riepilogo annuale", "🚗 Rimborsi trasferta"]
+    scheda_collab = scheda_attiva(schede_collab, "collab_scheda")
     ls = lavoro_sportivo
     AIUTO_ALTRA_PREVIDENZA = "Per esempio dipendente, iscritto a un'altra cassa o pensionato: l'aliquota INPS è più bassa e non si paga la quota per maternità e malattia."
     df_staff = leggi_df(
         "SELECT c.id, c.anagrafica_id, a.denominazione, a.codice_fiscale, c.mansione, c.tipo_contratto, c.compenso_pattuito, c.altra_previdenza "
         "FROM collaboratori_sportivi c JOIN anagrafiche a ON c.anagrafica_id = a.id ORDER BY a.denominazione")
 
-    with tab_coll:
+    if scheda_collab == schede_collab[0]:
         if not df_staff.empty:
             st.dataframe(pd.DataFrame({
                 "Collaboratore": df_staff["denominazione"], "Codice fiscale": df_staff["codice_fiscale"], "Mansione": df_staff["mansione"],
@@ -2781,7 +2904,7 @@ def pagina_lavoro_sportivo():
                             except Exception as ex_del:
                                 st.error(f"Errore durante l'eliminazione: {ex_del}")
 
-    with tab_comp:
+    if scheda_collab == schede_collab[1]:
         if not df_staff.empty:
             staff_dict = {f"{row['denominazione']} ({row['mansione']})": int(row["id"]) for _, row in df_staff.iterrows()}
             staff_righe = {int(r.id): r for r in df_staff.itertuples()}
@@ -2891,7 +3014,7 @@ def pagina_lavoro_sportivo():
         else:
             st.warning("Registra prima un collaboratore nella scheda «👥 Collaboratori».")
 
-    with tab_riep:
+    if scheda_collab == schede_collab[2]:
         st.markdown("#### 📊 Compensi dell'anno per collaboratore")
         st.caption("Anno solare (dal 1° gennaio al 31 dicembre), come per la Certificazione Unica. "
                    f"Nessun contributo INPS fino a € {ls.FRANCHIGIA_INPS:,.0f} e nessuna IRPEF fino a € {ls.FRANCHIGIA_IRPEF:,.0f} all'anno. "
@@ -2926,7 +3049,7 @@ def pagina_lavoro_sportivo():
             st.download_button(f"📥 Scarica il riepilogo {anno_r} (.xlsx)", file_riep, file_name=f"compensi_sportivi_{anno_r}.xlsx",
                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-    with tab_rimb:
+    if scheda_collab == schede_collab[3]:
         df_anag_sport = leggi_df("SELECT id, denominazione FROM anagrafiche WHERE tipo IN ('SOCIO_CALCIATORE', 'ALTRO', 'COLLABORATORE_SPORTIVO') ORDER BY denominazione")
 
         if not df_anag_sport.empty:
@@ -2972,12 +3095,16 @@ def pagina_prima_nota():
     # Tre sezioni invece di cinque schede in fila: il lavoro di tutti i giorni, i controlli del mese e quelli di fine anno.
     # Si costruisce solo la sezione scelta, così la pagina si apre più in fretta.
     SEZIONI_PN = {"movimenti": "📒 Movimenti", "mese": "🗓️ Controlli del mese", "anno": "📅 Fine anno"}
-    sezione_pn = st.segmented_control("Sezione", list(SEZIONI_PN), format_func=SEZIONI_PN.get, default="movimenti", key="pn_sezione",
+    ripristina_scelta("pn_sezione", "movimenti")
+    sezione_pn = st.segmented_control("Sezione", list(SEZIONI_PN), format_func=SEZIONI_PN.get, key="pn_sezione",
                                       label_visibility="collapsed") or "movimenti"
+    st.session_state["pn_sezione__u"] = sezione_pn
     if sezione_pn == "mese":
-        tab_f24, tab_estratti = st.tabs(["🧾 Versamenti F24", "🏦 Controllo estratto conto"])
+        schede_pn_mese = ["🧾 Versamenti F24", "🏦 Controllo estratto conto"]
+        scheda_pn_mese = scheda_attiva(schede_pn_mese, "pn_mese_scheda")
     elif sezione_pn == "anno":
-        tab_rendiconto, tab_apertura = st.tabs(["🏛️ Rendiconto economico finanziario", "📂 Apertura e chiusura esercizio"])
+        schede_pn_anno = ["🏛️ Rendiconto economico finanziario", "📂 Apertura e chiusura esercizio"]
+        scheda_pn_anno = scheda_attiva(schede_pn_anno, "pn_anno_scheda")
 
     if sezione_pn == "movimenti":
         saldi_liquidi = saldi_conti_prima_del(datetime.date.today() + datetime.timedelta(days=1))
@@ -2991,7 +3118,9 @@ def pagina_prima_nota():
             pdc_dict = {row["conto"]: int(row["id"]) for _, row in df_pdc.iterrows()}
 
             scelte_rm = ["💸 Spesa pagata", "💰 Incasso", "🔁 Spostamento tra banca, cassa e PayPal", "📐 Altro (conti DARE e AVERE)"]
-            tipo_rm = st.segmented_control("Cosa vuoi registrare?", scelte_rm, default=scelte_rm[0], key="pn_rm_tipo") or scelte_rm[0]
+            ripristina_scelta("pn_rm_tipo", scelte_rm[0])
+            tipo_rm = st.segmented_control("Cosa vuoi registrare?", scelte_rm, key="pn_rm_tipo") or scelte_rm[0]
+            st.session_state["pn_rm_tipo__u"] = tipo_rm
             LIQUIDI_RM = {"Banca": "10.01.001", "Cassa contanti": "10.01.002", "PayPal": "10.01.003"}
             id_liquidi = {nome: int(df_pdc.loc[df_pdc["conto"].str.startswith(cod), "id"].iloc[0]) for nome, cod in LIQUIDI_RM.items()
                           if df_pdc["conto"].str.startswith(cod).any()}
@@ -3275,7 +3404,7 @@ def pagina_prima_nota():
                 for n, g in df_pn.groupby("N° reg.", sort=False)]), width="stretch", hide_index=True)
 
     if sezione_pn == "anno":
-        with tab_rendiconto:
+        if scheda_pn_anno == schede_pn_anno[0]:
             st.markdown("### 🏛️ Rendiconto Economico-Finanziario dell'Esercizio")
             mese_ini_rend = mese_inizio_esercizio()
             date_pn = leggi_df("SELECT DISTINCT data_registrazione FROM movimenti_prima_nota WHERE data_registrazione IS NOT NULL")
@@ -3288,7 +3417,7 @@ def pagina_prima_nota():
             st.caption(f"Dal {ini_rend.strftime('%d/%m/%Y')} al {fin_rend.strftime('%d/%m/%Y')}.")
             df_rend = leggi_df(
                 """
-                SELECT p.tipo, p.codice, p.nome,
+                SELECT p.id AS id_conto, p.tipo, p.codice, p.nome,
                        COALESCE(SUM(x.dare), 0.0) as Tot_Dare, COALESCE(SUM(x.avere), 0.0) as Tot_Avere
                 FROM piano_dei_conti p
                 LEFT JOIN (
@@ -3321,6 +3450,27 @@ def pagina_prima_nota():
                                   width="stretch", hide_index=True,
                                   column_config={"Importo (€)": st.column_config.NumberColumn(format="%.2f")})
 
+            if not df_rend.empty:
+                with st.expander("🔎 Apri il mastrino di un conto (le registrazioni che lo compongono)"):
+                    conti_m = {f"{r['codice']} - {r['nome']}": (int(r["id_conto"]), r["tipo"]) for _, r in df_rend.iterrows()}
+                    conto_m = st.selectbox("Conto", list(conti_m), key=f"mastrino_{anno_rend}")
+                    id_m, tipo_m = conti_m[conto_m]
+                    df_mast = leggi_df(
+                        """SELECT m.id AS mov, m.data_registrazione AS Data, m.numero_documento AS Documento, m.causale AS Causale,
+                                  r.descrizione AS Descrizione, r.dare, r.avere
+                           FROM righe_prima_nota r JOIN movimenti_prima_nota m ON m.id = r.movimento_id
+                           WHERE r.sottoconto_id = ? AND m.data_registrazione BETWEEN ? AND ?
+                           ORDER BY m.data_registrazione, m.id, r.id""", [id_m, str(ini_rend), str(fin_rend)])
+                    segno_m = 1 if tipo_m == "COSTO" else -1
+                    df_mast["Importo (€)"] = (segno_m * (df_mast["dare"] - df_mast["avere"])).round(2)
+                    df_mast["Progressivo (€)"] = df_mast["Importo (€)"].cumsum().round(2)
+                    st.metric(f"Totale {conto_m}", f"€ {df_mast['Importo (€)'].sum():,.2f}")
+                    st.dataframe(df_mast.rename(columns={"mov": "N° reg."}).drop(columns=["dare", "avere"]), width="stretch", hide_index=True,
+                                 column_config={"Importo (€)": st.column_config.NumberColumn(format="%.2f"),
+                                                "Progressivo (€)": st.column_config.NumberColumn(format="%.2f")})
+                    st.caption("Il «N° reg.» è quello della Prima nota → Movimenti: lì puoi correggere la registrazione. "
+                               "Un importo negativo è uno storno o una rettifica.")
+
             st.markdown("**📄 Rendiconto per l'assemblea dei soci**")
             st.caption("PDF con rendiconto economico (a confronto con l'esercizio precedente e con il preventivo, se impostato), "
                        "disponibilità liquide e situazione patrimoniale a fine esercizio, e spazio per firme e data di approvazione.")
@@ -3342,7 +3492,7 @@ def pagina_prima_nota():
                                    file_name=f"rendiconto_{anno_rend.replace('/', '-')}.pdf", mime="application/pdf")
 
     if sezione_pn == "anno":
-        with tab_apertura:
+        if scheda_pn_anno == schede_pn_anno[1]:
             st.markdown("### 📂 Esercizio sociale e apertura dei conti")
             mese_ini = mese_inizio_esercizio()
             c_es1, c_es2 = st.columns([2, 1])
@@ -3570,7 +3720,7 @@ def pagina_prima_nota():
                                 st.rerun()
 
     if sezione_pn == "mese":
-        with tab_f24:
+        if scheda_pn_mese == schede_pn_mese[0]:
             st.markdown("### 🧾 Versamenti con modello F24")
             st.caption("Scrivi i codici tributo e gli importi come sulla quietanza dell'F24: l'app registra ogni importo sul conto giusto. "
                        "IVA trimestrale (6031-6034) del regime 398: si versa la metà dell'IVA delle fatture, l'altra metà è la detrazione forfettaria, "
@@ -3626,7 +3776,7 @@ def pagina_prima_nota():
                 st.caption("Per correggere o eliminare un F24 usa «Modifica o elimina una registrazione» nel giornale di prima nota.")
 
     if sezione_pn == "mese":
-        with tab_estratti:
+        if scheda_pn_mese == schede_pn_mese[1]:
             st.markdown("### 🏦 Controllo dell'estratto conto")
             st.caption("Carica l'estratto scaricato dalla banca (Excel «Lista movimenti») o da PayPal (rapporto delle attività in CSV): "
                        "l'app lo confronta con la prima nota e mostra cosa manca da una parte o dall'altra. Il file non viene salvato.")
@@ -3933,9 +4083,10 @@ def pagina_preventivo():
     realizzato = preventivo.consuntivo(movimenti_costi_ricavi(ini_pv, fin_pv))
     chiave = f"pv_{es_pv}_"
 
-    tab_conf, tab_mod = st.tabs(["📊 Confronto", "✏️ Imposta il preventivo"])
+    schede_preventivo = ["📊 Confronto", "✏️ Imposta il preventivo"]
+    scheda_preventivo = scheda_attiva(schede_preventivo, "preventivo_scheda")
 
-    with tab_mod:
+    if scheda_preventivo == schede_preventivo[1]:
         st.write("Puoi partire da una proposta e poi correggere gli importi. Niente viene salvato finché non premi «Salva il preventivo».")
         b1, b2 = st.columns(2)
         if b1.button("⚙️ Proponi dai parametri della stagione", key=chiave + "da_param",
@@ -3981,7 +4132,7 @@ def pagina_preventivo():
             except Exception as ex_pv:
                 st.error(f"Errore nel salvataggio del preventivo: {ex_pv}")
 
-    with tab_conf:
+    if scheda_preventivo == schede_preventivo[0]:
         df_conf = preventivo.confronto(df_conti_pv, salvato, realizzato)
         if not salvato:
             st.info(f"Il preventivo {es_pv} non è ancora impostato: compilalo nella scheda «✏️ Imposta il preventivo». "
@@ -4645,7 +4796,7 @@ def scheda_disciplina(con_contabilita):
                                 id_forn = int(trovato[0]) if trovato else w_conn.execute(
                                     "INSERT INTO anagrafiche (tipo, denominazione) VALUES ('FORNITORE', ?)", [forn.strip()]).lastrowid
                                 mov = registra_spesa(w_conn, id_forn, forn.strip(), f"CU {r.numero}", r.data, f"Ammenda sportiva (comunicato n. {r.numero})",
-                                                     "40.01.006", float(r.importo), 0.0, None, data_scadenza=str(scad) if con_scad else None)
+                                                     quote.CONTO_MULTE, float(r.importo), 0.0, None, data_scadenza=str(scad) if con_scad else None)
                                 spesa = w_conn.execute("SELECT id FROM fatture_passive WHERE movimento_id = ? ORDER BY id DESC LIMIT 1", [mov]).fetchone()[0]
                                 w_conn.execute("UPDATE provvedimenti_disciplinari SET spesa_id = ? WHERE id = ?", [int(spesa), int(r.id)])
                             st.session_state["flash"] = f"Ammenda di € {float(r.importo):,.2f} registrata come debito da pagare."
@@ -4746,15 +4897,15 @@ def pagina_squadra():
     gioc_cat = df_gioc[df_gioc["categoria"] == cat_sq]
     nomi_sq = {int(r.id): r.denominazione for r in gioc_cat.itertuples()}
     con_contabilita = utente_corrente()["ruolo"] in ("ADMIN", "SEGRETERIA")  # solo la segreteria registra le ammende come debiti
-    tab_conv, tab_pres, tab_tabellino, tab_stat, tab_rosa, tab_disc = st.tabs(
-        ["⚽ Convocazioni", "✅ Presenze allenamenti", "📝 Tabellino", "📊 Statistiche", "👥 Rosa", "⚖️ Disciplina"])
+    schede_squadra = ["⚽ Convocazioni", "✅ Presenze allenamenti", "📝 Tabellino", "📊 Statistiche", "👥 Rosa", "⚖️ Disciplina"]
+    scheda_squadra = scheda_attiva(schede_squadra, "squadra_scheda")
     situazioni = situazione_disciplinare(set(nomi_sq), cat_sq)
-    with tab_disc:
+    if scheda_squadra == schede_squadra[5]:
         scheda_disciplina(con_contabilita)
-    with tab_tabellino:
+    if scheda_squadra == schede_squadra[2]:
         scheda_tabellino(cat_sq, nomi_sq)
 
-    with tab_rosa:
+    if scheda_squadra == schede_squadra[4]:
         oggi_rosa = datetime.date.today().isoformat()
         st.dataframe(pd.DataFrame({
             "Giocatore": gioc_cat["denominazione"], "Telefono": gioc_cat["telefono"].fillna(""), "Email": gioc_cat["email"].fillna(""),
@@ -4764,7 +4915,7 @@ def pagina_squadra():
         }), width="stretch", hide_index=True)
         st.caption(f"{len(gioc_cat)} giocatori attivi.")
 
-    with tab_conv:
+    if scheda_squadra == schede_squadra[0]:
         importa_calendario(cat_sq)
         df_cal = leggi_df(
             "SELECT * FROM eventi_squadra e WHERE e.tipo = 'PARTITA' AND e.categoria = ? AND e.data >= ? "
@@ -4862,7 +5013,7 @@ def pagina_squadra():
                 st.session_state.pop("sq_conv_sel_id", None)
                 st.rerun()
 
-    with tab_pres:
+    if scheda_squadra == schede_squadra[1]:
         p1, p2 = st.columns(2)
         data_all = p1.date_input("Data dell'allenamento", format="DD/MM/YYYY", key="sq_data_all")
         ora_all = p2.text_input("Ora (facoltativa)", key="sq_ora_all", placeholder="19:00")
@@ -4901,7 +5052,7 @@ def pagina_squadra():
                     except Exception as ex_pr:
                         st.error(f"Errore nel salvataggio delle presenze: {ex_pr}")
 
-    with tab_stat:
+    if scheda_squadra == schede_squadra[3]:
         ini_sq, fin_sq, etich_sq = esercizio_corrente()
         df_pr = leggi_df(
             "SELECT p.anagrafica_id, a.denominazione AS nome, e.tipo, p.stato FROM presenze_evento p "
@@ -4981,11 +5132,12 @@ def pagina_utenti():
         registro_attivita()
         return
     st.subheader("🔐 Utenti e registro attività")
-    tab_ut, tab_reg = st.tabs(["👥 Utenti", "📜 Registro attività"])
+    schede_utenti = ["👥 Utenti", "📜 Registro attività"]
+    scheda_utenti = scheda_attiva(schede_utenti, "utenti_scheda")
     io_stesso = utente_corrente().get("id")
     squadre_possibili = [c for c in CATEGORIE_LISTA if c != "STAFF"]
 
-    with tab_ut:
+    if scheda_utenti == schede_utenti[0]:
         if "ut_password_nuova" in st.session_state:
             nome_pw, pw = st.session_state.pop("ut_password_nuova")
             st.success(f"Password provvisoria di **{nome_pw}** (si vede solo adesso: comunicala a voce o in un messaggio privato). "
@@ -5072,7 +5224,7 @@ def pagina_utenti():
                 st.session_state["ut_password_nuova"] = (riga["nome"], pw_reset)
                 st.rerun()
 
-    with tab_reg:
+    if scheda_utenti == schede_utenti[1]:
         registro_attivita()
 
 

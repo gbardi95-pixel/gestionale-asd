@@ -1,4 +1,4 @@
-from base_test import prepara, nuovo, db, bottone, campo
+from base_test import prepara, nuovo, db, bottone, campo, vai
 import datetime
 f = prepara("t_comp_pn")
 at = nuovo(f, "pagina_lavoro_sportivo")
@@ -9,6 +9,7 @@ c.commit()
 righe = lambda m: c.execute("SELECT p.codice, r.dare, r.avere FROM righe_prima_nota r JOIN piano_dei_conti p ON p.id = r.sottoconto_id WHERE r.movimento_id = ? ORDER BY r.id", [m]).fetchall()
 print("conti nuovi:", c.execute("SELECT codice, nome FROM piano_dei_conti WHERE codice IN ('20.02.003', '20.02.004', '40.01.007')").fetchall())
 at = nuovo(f, "pagina_lavoro_sportivo")
+vai(at, "collab_scheda", "Compensi")
 anno = datetime.date.today().year
 def compenso(data, lordo, con="BONIFICO"):
     campo(at.selectbox, "Seleziona Collaboratore").set_value(campo(at.selectbox, "Seleziona Collaboratore").options[0])

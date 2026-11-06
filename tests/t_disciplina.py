@@ -81,7 +81,7 @@ assert d.situazione([dict(base, tipo="DIFFIDA")], "2026-11-20", ultimo_comunicat
 print("situazione OK")
 
 # schermate
-from base_test import prepara, nuovo, db, bottone, campo
+from base_test import prepara, nuovo, db, bottone, campo, vai
 import pandas as pd
 f = prepara("t_disciplina")
 at = nuovo(f, "pagina_dashboard")
@@ -109,12 +109,13 @@ at = nuovo(f, "pagina_squadra")
 etichette = campo(at.multiselect, "Convocati").options
 print("opzioni convocati:", etichette)
 assert any("diffidato" in str(o) for o in etichette) and any("squalificato" in str(o) for o in etichette)
+vai(at, "squadra_scheda", "Rosa")
 rosa = [x for x in at.dataframe if "Disciplina" in x.value.columns][0].value
 print(rosa.to_string())
 assert (rosa["Disciplina"] != "").sum() == 2
 
 # tabellino: reti e cartellini di una partita
-at.session_state["tab_partita"] = at.session_state["tab_partita"] if "tab_partita" in at.session_state else None
+vai(at, "squadra_scheda", "Tabellino")
 bottone(at, "💾 Salva il tabellino").click().run()
 assert not at.exception, at.exception
 print("salvataggio tabellino vuoto OK:", c.execute("SELECT COUNT(*) FROM tabellino_giocatori").fetchone())
@@ -122,6 +123,7 @@ c.execute("INSERT INTO tabellino_giocatori (evento_id, anagrafica_id, titolare, 
           [ev, ids["Mario Rossi"]])
 c.commit()
 at = nuovo(f, "pagina_squadra")
+vai(at, "squadra_scheda", "Statistiche")
 stat = [x for x in at.dataframe if "Squalifiche" in x.value.columns][0].value
 print(stat.to_string())
 riga = stat[stat["Giocatore"] == "Mario Rossi"].iloc[0]
@@ -130,17 +132,18 @@ assert stat[stat["Giocatore"] == "Andrea Gialli"].iloc[0]["Squalifiche"] == 1
 assert not at.exception
 
 # ammenda: diventa un debito da pagare (spesa non pagata) in prima nota, una sola volta
-assert any("Disciplina" in t.label for t in at.tabs)
+vai(at, "squadra_scheda", "Disciplina")
 campo(at.text_input, "Creditore").set_value("Ente di prova")
 bottone(at, "➕ Registra il debito").click().run()
 assert not at.exception, at.exception
 sp = c.execute("SELECT id, totale, numero_doc, data_pagamento, categoria_spesa, movimento_id FROM fatture_passive").fetchall()
 print("spesa:", sp)
-assert len(sp) == 1 and sp[0][1] == 20 and sp[0][2] == "CU 7" and sp[0][3] is None and sp[0][4] == "40.01.006"
+assert len(sp) == 1 and sp[0][1] == 20 and sp[0][2] == "CU 7" and sp[0][3] is None and sp[0][4] == "40.01.010"
 righe = c.execute("SELECT SUM(dare), SUM(avere) FROM righe_prima_nota WHERE movimento_id = ?", [sp[0][5]]).fetchone()
 assert righe == (20, 20), righe
 assert c.execute("SELECT spesa_id FROM provvedimenti_disciplinari WHERE tipo = 'AMMENDA'").fetchone()[0] == sp[0][0]
 at = nuovo(f, "pagina_squadra")
+vai(at, "squadra_scheda", "Disciplina")
 assert not [b for b in at.button if b.label.startswith("➕ Registra il debito")], "ammenda proposta due volte"
 at = nuovo(f, "pagina_spese")
 assert any("da pagare" in e.label for e in at.expander), [e.label for e in at.expander]

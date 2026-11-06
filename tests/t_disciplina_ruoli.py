@@ -29,6 +29,7 @@ def apri(i, ruolo, squadre):
     at.session_state["autenticato"] = True
     at.session_state["utente"] = {"id": i, "nome_utente": ruolo.lower(), "nome": ruolo, "ruolo": ruolo, "squadre": squadre, "cambio_password": False}
     at.session_state["pagina_test"] = "pagina_squadra"
+    at.session_state["squadra_scheda"] = "⚖️ Disciplina"
     at.run()
     assert not at.exception, at.exception
     return at
@@ -40,7 +41,6 @@ print(reg.to_string())
 assert set(reg["Persona"]) == {"Andrea Gialli", "Società"}
 assert not [b for b in at.button if b.label.startswith("➕ Registra il debito")]
 assert any("Se ne occupa la segreteria" in i.value for i in at.info)
-assert any("Disciplina" in t.label for t in at.tabs)
 
 at = apri(2, "SEGRETERIA", [])
 reg = [x for x in at.dataframe if "Provvedimento" in x.value.columns][0].value

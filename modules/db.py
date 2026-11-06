@@ -36,13 +36,19 @@ PIANO_DEI_CONTI_ASD = [
     ('40', 'COSTI PER ATTIVITÀ SPORTIVA E GESTIONE', 'COSTO', 1),
     ('40.01', 'Costi Attività Sportiva Calcio', 'COSTO', 2),
     ('40.01.001', 'Compensi e Rimborsi Staff Tecnico', 'COSTO', 3),
-    ('40.01.002', 'Tasse Affiliazione e Tesseramenti Federazione/Ente', 'COSTO', 3),
+    ('40.01.002', 'Tesseramenti (Tessere e Schede Attività)', 'COSTO', 3),
     ('40.01.003', 'Materiale Sportivo e Abbigliamento Gara', 'COSTO', 3),
     ('40.01.004', 'Affitto Campi e Strutture Sportive', 'COSTO', 3),
     ('40.01.005', 'Spese Sanitarie e Visite Mediche', 'COSTO', 3),
-    ('40.01.006', 'Iscrizione Campionati, Multe e Sanzioni Sportive', 'COSTO', 3),
+    ('40.01.006', 'Iscrizione ai Campionati', 'COSTO', 3),
     ('40.01.007', 'Contributi INPS a Carico della Società', 'COSTO', 3),
     ('40.01.008', 'Spese per Attività Associativa', 'COSTO', 3),
+    ('40.01.009', 'Affiliazione alla Federazione/Ente', 'COSTO', 3),
+    ('40.01.010', 'Multe e Sanzioni Sportive', 'COSTO', 3),
+    ('40.01.011', 'Assicurazioni Tesserati e Infortuni', 'COSTO', 3),
+    ('40.01.012', 'Tasse Gara e Arbitri', 'COSTO', 3),
+    ('40.01.013', 'Rimborsi Chilometrici e Trasferte', 'COSTO', 3),
+    ('40.01.014', 'Lavanderia e Magazzino', 'COSTO', 3),
     ('40.02', 'Costi Generali e Amministrativi', 'COSTO', 2),
     ('40.02.001', 'Consulenze Amministrative e Fiscali', 'COSTO', 3),
     ('40.02.002', 'Utenze e Manutenzioni Impianti', 'COSTO', 3),
@@ -60,6 +66,10 @@ PIANO_DEI_CONTI_ASD = [
     ('50.01.001', 'Quote Associative Annue', 'RICAVO', 3),
     ('50.01.002', 'Quote Iscrizione e Frequenza Calciatori', 'RICAVO', 3),
     ('50.01.003', 'Erogazioni Liberali', 'RICAVO', 3),
+    ('50.01.004', 'Quote di Tesseramento', 'RICAVO', 3),
+    ('50.01.005', '5 per Mille', 'RICAVO', 3),
+    ('50.01.006', 'Contributi Pubblici (Comune, Regione, Enti)', 'RICAVO', 3),
+    ('50.01.007', 'Feste, Eventi e Raccolte Fondi', 'RICAVO', 3),
     ('50.02', 'Entrate Commerciali (Regime 398/91)', 'RICAVO', 2),
     ('50.02.001', 'Ricavi per Sponsorizzazioni e Pubblicità', 'RICAVO', 3),
     ('50.02.002', 'Contributi da Enti e Associazioni', 'RICAVO', 3),
@@ -752,6 +762,13 @@ def init_db(versione_schema=None):
         "INSERT INTO piano_dei_conti (codice, nome, tipo, livello) VALUES (?, ?, ?, ?) ON CONFLICT(codice) DO NOTHING;",
         PIANO_DEI_CONTI_ASD
     )
+
+    # Conti divisi in più voci: si aggiornano solo i nomi ancora uguali a quelli predefiniti di prima (affiliazione, tesseramenti, iscrizione e multe)
+    for codice_nome, vecchio, nuovo in (
+        ("40.01.002", "Tasse Affiliazione e Tesseramenti Federazione/Ente", "Tesseramenti (Tessere e Schede Attività)"),
+        ("40.01.006", "Iscrizione Campionati, Multe e Sanzioni Sportive", "Iscrizione ai Campionati"),
+    ):
+        cursor.execute("UPDATE piano_dei_conti SET nome = ? WHERE codice = ? AND nome = ?", [nuovo, codice_nome, vecchio])
 
     if versione_schema is not None:
         cursor.execute(

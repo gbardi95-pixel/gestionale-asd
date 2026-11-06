@@ -60,7 +60,7 @@ for cattivo in ("http://sito.it/{codice}", "https://sito.it/senza-codice"):
 print("lettura pagina OK")
 
 # schermata
-from base_test import prepara, nuovo, db, bottone, campo
+from base_test import prepara, nuovo, db, bottone, campo, vai
 import datetime
 f = prepara("t_sportbit")
 nuovo(f, "pagina_dashboard")
@@ -96,6 +96,7 @@ def finto(richiesta, timeout=None):
 
 urllib.request.urlopen = finto
 at = nuovo(f, "pagina_squadra")
+vai(at, "squadra_scheda", "Tabellino")
 campo(at.text_input, "Link o codice").set_value("https://esempio.it/x?GameCompleteCode=9999-1")
 bottone(at, "🔍 Leggi").click().run()
 assert not at.exception, at.exception

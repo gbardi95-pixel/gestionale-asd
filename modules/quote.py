@@ -14,8 +14,9 @@ VOCI = [
 ]
 ETICHETTE = {codice: etichetta for codice, etichetta, _ in VOCI}
 # Conto di prima nota di ogni voce: la cauzione è un deposito da restituire, non un costo
-CONTO_VOCE = {"ISCRIZIONE_CAMPIONATO": "40.01.006", "CAUZIONE": "10.02.003"}
+CONTO_VOCE = {"ISCRIZIONE_CAMPIONATO": "40.01.006", "CAUZIONE": "10.02.003", "AFFILIAZIONE": "40.01.009"}
 CONTO_TESSERAMENTI = "40.01.002"
+CONTO_MULTE = "40.01.010"  # ammende e sanzioni sportive, anche quelle trattenute dalla cauzione
 SQUADRE_SENZA_CAMPIONATO = {"STAFF"}
 TUTTE = ""  # categoria vuota = valore valido per tutte le squadre
 
@@ -131,5 +132,5 @@ def costo_tesseramenti(df_tesserati, df_parametri):
     affiliazione = valore(df_parametri, "AFFILIAZIONE", TUTTE, "costo_societa")
     if affiliazione:
         righe.append({"Voce": ETICHETTE["AFFILIAZIONE"], "Squadra": "", "Quantità": 1, "Costo unitario (€)": affiliazione, "Totale (€)": affiliazione,
-                      "Conto": CONTO_TESSERAMENTI})
+                      "Conto": CONTO_VOCE["AFFILIAZIONE"]})
     return pd.DataFrame(righe, columns=["Voce", "Squadra", "Quantità", "Costo unitario (€)", "Totale (€)", "Conto"])

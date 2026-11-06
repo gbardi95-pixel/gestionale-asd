@@ -60,7 +60,7 @@ assert sel.value is None
 sel.set_value(sel.options[0]).run()
 assert not at.exception, at.exception
 # dopo la scelta (come dopo un salvataggio) si resta nella scheda di modifica e l'indirizzo la ricorda
-assert at.session_state["soci_scheda"].startswith("✏️") and at.query_params["scheda"] == ["2"] or at.query_params["scheda"] == "2", at.query_params
+assert at.session_state["soci_scheda"].startswith("✏️") and at.query_params["soci_scheda"] in (["2"], "2"), at.query_params
 assert any("Modifica / Elimina Dati" in m.value for m in at.markdown)
 at = nuovo(f, "pagina_lavoro_sportivo")
 assert not at.exception, at.exception

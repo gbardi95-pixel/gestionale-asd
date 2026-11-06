@@ -48,3 +48,18 @@ def bottone(at, inizio):
 
 def campo(elenco, etichetta):
     return [x for x in elenco if x.label.startswith(etichetta)][0]
+
+
+def vai(at, chiave, inizio):
+    """Sceglie la scheda di una pagina (le schede non si vedono più tutte insieme) e rilancia la pagina."""
+    import ast
+    albero = ast.parse(open("app.py", encoding="utf-8").read())
+    for n in ast.walk(albero):
+        if isinstance(n, ast.Assign) and isinstance(n.targets[0], ast.Name) and n.targets[0].id.startswith("schede_") and isinstance(n.value, ast.List):
+            for e in n.value.elts:
+                if e.value.split(" ", 1)[-1].startswith(inizio) or e.value.startswith(inizio):
+                    at.session_state[chiave] = e.value
+                    at.run()
+                    assert not at.exception, at.exception
+                    return at
+    raise AssertionError(f"scheda non trovata: {inizio}")

@@ -1,7 +1,7 @@
 """Disciplina: importazione del comunicato dalla schermata (PDF inventato, generato qui) fino alla registrazione nel database."""
 import io, os, sys, tempfile, warnings
 warnings.filterwarnings("ignore")
-from base_test import prepara, nuovo, db, bottone, campo
+from base_test import prepara, nuovo, db, bottone, campo, vai
 
 SQ = ["ASD ROSSA", "BLU BOYS"]
 RIGHE = ["CU 7 del 04/11/2026", "COMITATO TERRITORIALE DI PROVA APS", "CLASSIFICA – GIRONE 1"]
@@ -37,6 +37,7 @@ for nome in ("Mario Rossi", "Paolo Verdi"):
 c.commit()
 
 at = nuovo(f, "pagina_squadra")
+vai(at, "squadra_scheda", "Disciplina")
 sel = campo(at.selectbox, "Il nome della tua società")
 print("squadre trovate:", sel.options)
 assert sel.options == SQ
@@ -57,6 +58,7 @@ assert c.execute("SELECT anagrafica_id, reti FROM reti_comunicato").fetchall() =
 assert c.execute("SELECT valore FROM impostazioni WHERE chiave = 'nome_nei_comunicati'").fetchone()[0] == "ASD ROSSA"
 # secondo import dello stesso comunicato: nessun doppione
 at = nuovo(f, "pagina_squadra")
+vai(at, "squadra_scheda", "Disciplina")
 campo(at.selectbox, "Il nome della tua società").set_value("ASD ROSSA").run()
 bottone(at, "💾 Registra nel programma").click().run()
 assert c.execute("SELECT COUNT(*) FROM provvedimenti_disciplinari").fetchone()[0] == 2

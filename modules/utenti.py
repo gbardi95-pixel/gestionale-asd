@@ -43,7 +43,10 @@ def limita_squadre(ruolo):
 
 
 def squadre_da_testo(testo):
-    return [s for s in (testo or "").split(",") if s]
+    """Squadre scritte nel campo separate da virgola; il campo può essere vuoto o NaN (valore vuoto di pandas)."""
+    if not isinstance(testo, str):
+        return []
+    return [s.strip() for s in testo.split(",") if s.strip()]
 
 
 # ---------------------------------------------------------
