@@ -16,6 +16,7 @@ ETICHETTE = {codice: etichetta for codice, etichetta, _ in VOCI}
 # Conto di prima nota di ogni voce: la cauzione è un deposito da restituire, non un costo
 CONTO_VOCE = {"ISCRIZIONE_CAMPIONATO": "40.01.006", "CAUZIONE": "10.02.003", "AFFILIAZIONE": "40.01.009"}
 CONTO_TESSERAMENTI = "40.01.002"
+CONTO_RICAVO_QUOTE = "50.01.004"  # quote pagate da chi si tessera (ricevute «Quota Associativa Annua» e preventivo)
 CONTO_MULTE = "40.01.010"  # ammende e sanzioni sportive, anche quelle trattenute dalla cauzione
 SQUADRE_SENZA_CAMPIONATO = {"STAFF"}
 TUTTE = ""  # categoria vuota = valore valido per tutte le squadre

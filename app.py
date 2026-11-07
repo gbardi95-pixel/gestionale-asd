@@ -527,7 +527,7 @@ def pdf_ricevuta(ricevuta_id, societa_tuple):
 def righe_incasso(w_conn, tipo_causale, importo, pagamento, pregresso):
     """Righe di prima nota di una ricevuta: entra in cassa/banca, esce un ricavo (o un credito verso il socio)."""
     cod_cassa = {"BONIFICO": "10.01.001", "POS": "10.01.001", "PAYPAL": "10.01.003"}.get(pagamento, "10.01.002")
-    cod_ricavo = "50.01.003" if tipo_causale == CAUSALE_EROGAZIONE else ("50.01.001" if "Annua" in tipo_causale else "50.01.002")
+    cod_ricavo = "50.01.003" if tipo_causale == CAUSALE_EROGAZIONE else (quote.CONTO_RICAVO_QUOTE if "Annua" in tipo_causale else "50.01.002")
     if pregresso:
         cod_ricavo = esercizio.CONTO_CREDITI_SOCI  # si incassa un credito, non un nuovo ricavo
     return [(get_conto_id(w_conn, cod_cassa), f"Incasso {tipo_causale}", float(importo), 0.0),

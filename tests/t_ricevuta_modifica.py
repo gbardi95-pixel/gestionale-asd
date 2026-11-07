@@ -22,7 +22,7 @@ def saldi(cod):
                      "WHERE p.codice = ?", [cod]).fetchone()
 
 
-assert saldi("10.01.001") == (150.0, 0.0) and saldi("50.01.001") == (0.0, 150.0), (saldi("10.01.001"), saldi("50.01.001"))
+assert saldi("10.01.001") == (150.0, 0.0) and saldi("50.01.004") == (0.0, 150.0), (saldi("10.01.001"), saldi("50.01.004"))
 
 # correzione: importo, tipologia, pagamento e data dell'anno prima
 at = nuovo(f, "pagina_ricevute")
@@ -40,7 +40,7 @@ assert r[0] == "5/2025" and r[1] == "2025-09-10" and r[2] == 120.0 and r[3].star
 assert c.execute("SELECT COUNT(*) FROM movimenti_prima_nota WHERE causale LIKE 'Incasso%'").fetchone()[0] == 1
 assert saldi("10.01.001") == (0.0, 0.0), saldi("10.01.001")
 assert saldi("10.01.002") == (120.0, 0.0) and saldi("50.01.002") == (0.0, 120.0), (saldi("10.01.001"), saldi("50.01.002"))
-assert saldi("50.01.001") == (0.0, 0.0)
+assert saldi("50.01.004") == (0.0, 0.0)
 m = c.execute("SELECT numero_documento, data_registrazione FROM movimenti_prima_nota WHERE causale LIKE 'Incasso%'").fetchone()
 assert m == ("5/2025", "2025-09-10"), m
 

@@ -3,7 +3,7 @@ import pandas as pd
 
 from modules import quote
 
-CONTO_QUOTE = "50.01.001"
+CONTO_QUOTE = quote.CONTO_RICAVO_QUOTE
 
 
 def proposta_da_parametri(df_tesserati, df_parametri):
