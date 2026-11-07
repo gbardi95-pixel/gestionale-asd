@@ -28,3 +28,8 @@ __pycache__/
 # Strumenti e cartelle di lavoro locali
 .claude/
 import/
+
+# Copie di sicurezza, elaborazioni e archivi di fatture: restano solo in locale
+backup/
+output/
+*.zip
