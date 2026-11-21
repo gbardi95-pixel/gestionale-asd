@@ -8,6 +8,7 @@ c = db()
 # dati minimi perché le pagine abbiano qualcosa da mostrare
 aid = c.execute("INSERT INTO anagrafiche (tipo, denominazione, codice_fiscale) VALUES ('SOCIO_CALCIATORE', 'Rossi Luca', 'RSSLCU12A01H501X')").lastrowid
 c.execute("INSERT INTO tesserati_calcio (anagrafica_id, numero_tessera, categoria) VALUES (?, 'T1', 'JUNIORES')", [aid])
+did = c.execute("INSERT INTO distinte_gara (data_gara, squadra_casa, squadra_ospite) VALUES ('2026-01-10', 'Squadra A', 'Squadra B')").lastrowid
 c.commit()
 
 albero = ast.parse(open("app.py", encoding="utf-8").read())

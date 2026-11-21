@@ -2180,7 +2180,9 @@ def pagina_distinte():
                                                 "campo": "Campo", "competizione": "Competizione", "giocatori": "Giocatori"}).drop(columns=["id"])
             vista["Data"] = pd.to_datetime(vista["Data"]).dt.strftime("%d/%m/%Y")
             st.dataframe(vista, width="stretch", hide_index=True)
-            id_arch = st.selectbox("Distinta", [i for i in etichette if isinstance(i, int) and i], format_func=etichette.get, key="arch_sel")
+            etichette_arch = {int(r.id): f"{pd.Timestamp(r.data_gara).strftime('%d/%m/%Y')} - {r.squadra_casa or '?'} vs {r.squadra_ospite or '?'}"
+                              for r in df_archivio.itertuples()}
+            id_arch = st.selectbox("Distinta", list(etichette_arch), format_func=etichette_arch.get, key="arch_sel")
             ca, cb = st.columns(2)
             try:
                 ca.download_button("📥 Scarica (Word)", docx_distinta(id_arch), file_name=f"distinta_{id_arch}.docx",
