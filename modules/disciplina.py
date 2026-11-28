@@ -200,30 +200,36 @@ def leggi_comunicato(testo, squadra):
             "marcatori": marcatori, "avvisi": list(dict.fromkeys(avvisi))}
 
 
-def situazione(provvedimenti, oggi, partite_dopo=lambda data: 0, ultimo_comunicato=None):
-    """Situazione disciplinare attuale di un giocatore, dai suoi provvedimenti (ordinati dal più recente).
+def situazione(provvedimenti, quando, date_partite=()):
+    """Situazione disciplinare di una persona alla data indicata (di solito quella della gara), dai suoi provvedimenti
+    ordinati dal più recente.
 
     provvedimenti: elenco di dict con tipo, data_comunicato, numero_comunicato, giornate, fino_al.
-    partite_dopo(data): quante partite della squadra sono state giocate dopo quella data.
-    ultimo_comunicato: (data, numero) dell'ultimo comunicato importato: la diffida vale solo se è elencata lì.
+    date_partite: date delle partite in calendario della squadra. Una squalifica a giornate si sconta con le partite tra il comunicato
+    e `quando`, esclusa quella del giorno `quando`: il giorno della gara la squalifica vale ancora. I comunicati successivi a `quando`
+    non contano. La diffida resta finché non arriva una squalifica per somma di ammonizioni (il comunicato la elenca una volta sola).
     Restituisce (stato, testo): stato è «SQUALIFICATO», «DIFFIDATO» o None. Per le squalifiche a giornate il testo riporta le partite
-    giocate dopo il comunicato: stabilire se la squalifica è scontata resta una verifica da fare sul comunicato."""
-    if not provvedimenti:
-        return None, ""
-    ultimo_numero = ultimo_comunicato or max((p["data_comunicato"], p["numero_comunicato"]) for p in provvedimenti)
-    for p in provvedimenti:
-        quando = f"comunicato {p['numero_comunicato']} del {'/'.join(reversed(str(p['data_comunicato']).split('-')))}"
-        if p["tipo"] == "SQUALIFICA_TEMPO" and p.get("fino_al") and str(p["fino_al"]) >= str(oggi):
-            return "SQUALIFICATO", f"Squalifica a tempo fino al {'/'.join(reversed(str(p['fino_al']).split('-')))} ({quando})"
+    già contate: stabilire se la squalifica è scontata resta una verifica da fare sul comunicato."""
+    quando = str(quando)
+    validi = [p for p in provvedimenti if str(p["data_comunicato"]) <= quando]
+
+    def citazione(p):
+        return f"comunicato {p['numero_comunicato']} del {'/'.join(reversed(str(p['data_comunicato']).split('-')))}"
+
+    for p in validi:
+        if p["tipo"] == "SQUALIFICA_TEMPO" and p.get("fino_al") and str(p["fino_al"]) >= quando:
+            return "SQUALIFICATO", f"Squalifica a tempo fino al {'/'.join(reversed(str(p['fino_al']).split('-')))} ({citazione(p)})"
         if p["tipo"] in ("SQUALIFICA_GIORNATE", "SQUALIFICA_SOMMA"):
             n = int(p.get("giornate") or 1)
-            giocate = partite_dopo(p["data_comunicato"])
+            giocate = sum(1 for x in date_partite if str(p["data_comunicato"]) < str(x) < quando)
             if giocate < n:
-                return "SQUALIFICATO", (f"Squalificato per {n} giornat{'a' if n == 1 else 'e'} ({quando}); "
-                                        f"partite registrate dopo il comunicato: {giocate}")
-    for p in provvedimenti:
-        if p["tipo"] == "DIFFIDA" and (p["data_comunicato"], p["numero_comunicato"]) == ultimo_numero:
-            return "DIFFIDATO", "Diffidato: alla prossima ammonizione scatta la squalifica"
+                return "SQUALIFICATO", (f"Squalificato per {n} giornat{'a' if n == 1 else 'e'} ({citazione(p)}); "
+                                        f"partite già contate dopo il comunicato: {giocate}")
+    for p in validi:  # dal più recente: conta quale viene prima tra diffida e squalifica per somma
+        if p["tipo"] == "SQUALIFICA_SOMMA":
+            break
+        if p["tipo"] == "DIFFIDA":
+            return "DIFFIDATO", f"Diffidato ({citazione(p)}): alla prossima ammonizione scatta la squalifica"
     return None, ""
 
 

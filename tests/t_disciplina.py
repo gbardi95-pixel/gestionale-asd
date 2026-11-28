@@ -70,16 +70,7 @@ assert d.abbina_nome("VERDE PAOLO", cand)[0] is None and 4 in d.abbina_nome("VER
 assert d.abbina_nome("SCONOSCIUTO NOME", cand) == (None, [])
 print("abbinamento nomi OK")
 
-# situazione: squalifica a giornate (partite dopo il comunicato), a tempo, diffida solo se nell'ultimo comunicato
-base = {"data_comunicato": "2026-11-04", "numero_comunicato": 7, "giornate": 2, "fino_al": None}
-assert d.situazione([dict(base, tipo="SQUALIFICA_GIORNATE")], "2026-11-10", lambda x: 1)[0] == "SQUALIFICATO"
-assert d.situazione([dict(base, tipo="SQUALIFICA_GIORNATE")], "2026-11-20", lambda x: 2)[0] is None
-assert d.situazione([dict(base, tipo="SQUALIFICA_TEMPO", fino_al="2026-11-30")], "2026-11-29")[0] == "SQUALIFICATO"
-assert d.situazione([dict(base, tipo="SQUALIFICA_TEMPO", fino_al="2026-11-30")], "2026-12-01")[0] is None
-assert d.situazione([dict(base, tipo="DIFFIDA")], "2026-11-10", ultimo_comunicato=("2026-11-04", 7))[0] == "DIFFIDATO"
-assert d.situazione([dict(base, tipo="DIFFIDA")], "2026-11-20", ultimo_comunicato=("2026-11-11", 8))[0] is None
-print("situazione OK")
-
+# le regole di squalifiche e diffide sono provate in t_disciplina_avvisi.py
 # schermate
 from base_test import prepara, nuovo, db, bottone, campo, vai
 import pandas as pd

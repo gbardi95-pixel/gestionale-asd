@@ -642,6 +642,11 @@ def esercizio_corrente():
     """(inizio, fine, etichetta) dell'esercizio in corso oggi."""
     return esercizio.periodo_esercizio(datetime.date.today(), mese_inizio_esercizio())
 
+def stagione_sportiva(data=None):
+    """(inizio, fine, etichetta) della stagione sportiva (1/7-30/6) che contiene la data (se manca, oggi). Vale per statistiche e disciplina,
+    anche quando la contabilità segue un esercizio diverso."""
+    return esercizio.periodo_esercizio(data or datetime.date.today(), 7)
+
 def saldi_conti_prima_del(data):
     """Saldo (dare - avere) di ogni conto con i movimenti registrati prima della data indicata."""
     df = leggi_df(
@@ -789,24 +794,33 @@ def dashboard_allenatore():
     else:
         st.success("Tutti i certificati sono validi fino alla prossima partita.")
 
-    ini, fin, etich = esercizio_corrente()
+    ini, fin, etich = stagione_sportiva()
     tab = leggi_df("SELECT t.evento_id, t.reti, t.assist, t.ammonizioni, t.espulso, t.anagrafica_id FROM tabellino_giocatori t JOIN eventi_squadra e ON e.id = t.evento_id "
                    "WHERE e.categoria = ? AND e.data BETWEEN ? AND ?", [cat, str(ini), str(fin)])
     st.markdown("**⚖️ Situazione disciplinare**")
-    situazioni = situazione_disciplinare(set(nomi), cat)
-    squalificati = [(nomi[a], t) for a, (stato, t) in situazioni.items() if stato == "SQUALIFICATO"]
-    diffidati = [(nomi[a], t) for a, (stato, t) in situazioni.items() if stato == "DIFFIDATO"]
+    # anche allenatori e dirigenti possono essere squalificati: oltre ai giocatori si controllano gli altri della squadra e lo staff
+    persone_sq = leggi_df("SELECT a.id, a.denominazione AS nome FROM tesserati_calcio t JOIN anagrafiche a ON a.id = t.anagrafica_id "
+                          "WHERE t.stato = 'ATTIVO' AND t.categoria IN (?, 'STAFF') ORDER BY a.denominazione", [cat])
+    nomi_disc = {int(r.id): r.nome for r in persone_sq.itertuples()}
+    data_rif = datetime.date.today() if prossima.empty else datetime.date.fromisoformat(str(prossima.iloc[0]["data"])[:10])
+    situazioni = situazione_disciplinare(set(nomi_disc), cat, data_rif)
+    squalificati = [(nomi_disc[a], t) for a, (stato, t) in situazioni.items() if stato == "SQUALIFICATO"]
+    diffidati = [(nomi_disc[a], t) for a, (stato, t) in situazioni.items() if stato == "DIFFIDATO"]
     # regolamento di partecipazione: la 3ª ammonizione in partite diverse della stessa manifestazione comporta la squalifica per una giornata
-    ammonizioni = tab.groupby("anagrafica_id")["ammonizioni"].sum() if not tab.empty else pd.Series(dtype=int)
-    for aid, n_amm in ammonizioni.items():
-        if int(aid) in nomi and int(aid) not in situazioni and int(n_amm) % 3 == 2:
-            diffidati.append((nomi[int(aid)], f"{int(n_amm)} ammonizioni nelle partite registrate: alla prossima scatta la squalifica per una giornata"))
+    # si contano sulla stagione sportiva (1/7-30/6): il cambio di anno o di esercizio contabile non le azzera
+    ini_stag, fin_stag, _ = stagione_sportiva(data_rif)
+    ammonizioni = leggi_df("SELECT t.anagrafica_id, SUM(t.ammonizioni) AS n FROM tabellino_giocatori t JOIN eventi_squadra e ON e.id = t.evento_id "
+                           "WHERE e.categoria = ? AND e.data BETWEEN ? AND ? GROUP BY t.anagrafica_id", [cat, str(ini_stag), str(fin_stag)])
+    for r in ammonizioni.itertuples():
+        aid, n_amm = int(r.anagrafica_id), int(r.n or 0)
+        if aid in nomi and aid not in situazioni and n_amm % 3 == 2:
+            diffidati.append((nomi[aid], f"{n_amm} ammonizioni nelle partite registrate: alla prossima scatta la squalifica per una giornata"))
     if squalificati:
         st.dataframe(pd.DataFrame(squalificati, columns=["⛔ Squalificati (non disponibili)", "Dettaglio"]), width="stretch", hide_index=True)
     if diffidati:
         st.dataframe(pd.DataFrame(diffidati, columns=["⚠️ A rischio: alla prossima ammonizione scatta la squalifica", "Dettaglio"]), width="stretch", hide_index=True)
     if not squalificati and not diffidati:
-        st.success("Nessun giocatore squalificato o diffidato. (Dipende dai comunicati importati nella pagina «Convocazioni e presenze».)")
+        st.success("Nessuno squalificato o diffidato. (Dipende dai comunicati importati nella pagina «Convocazioni e presenze».)")
 
     st.markdown("**📈 Statistiche della squadra**")
     pres = leggi_df("SELECT p.stato FROM presenze_evento p JOIN eventi_squadra e ON e.id = p.evento_id WHERE e.tipo = 'ALLENAMENTO' AND e.categoria = ? "
@@ -820,7 +834,7 @@ def dashboard_allenatore():
     if not tab.empty and tab["reti"].sum() > 0:
         marcatori = tab.groupby("anagrafica_id")["reti"].sum().sort_values(ascending=False).head(3)
         st.caption("Migliori marcatori: " + ", ".join(f"{nomi.get(int(a), 'ex giocatore')} ({int(n)})" for a, n in marcatori.items() if n > 0))
-    st.caption(f"Esercizio {etich}. Il dettaglio per giocatore è nella pagina «Convocazioni e presenze».")
+    st.caption(f"Stagione sportiva {etich} (1/7-30/6). Il dettaglio per giocatore è nella pagina «Convocazioni e presenze».")
 
 
 def pagina_dashboard():
@@ -2008,7 +2022,7 @@ def pagina_distinte():
             st.warning("Tolti dalla distinta perché alla data della gara non possono giocare: " + ", ".join(
                 f"{pers[pid]['denominazione']} ({esclusi[pid]})" if pid in pers else str((sal_gioc.get(pid) or {}).get("nominativo", pid))
                 for pid in non_piu_ammessi))
-        situazioni_dist = situazione_disciplinare(set(ammessi), conv_sel.categoria if conv_sel is not None else None)
+        situazioni_dist = situazione_disciplinare(set(pers), conv_sel.categoria if conv_sel is not None else None, data_gara)
         sel_gioc = st.multiselect("Giocatori convocati (in distinta compaiono in ordine alfabetico)", ammessi, default=def_gioc,
                                   format_func=lambda pid: pers[pid]["denominazione"] + segno_disciplina(situazioni_dist.get(pid)), key=k + "gioc",
                                   placeholder="Scrivi il nome per cercare o scegli i giocatori")
@@ -2049,8 +2063,11 @@ def pagina_distinte():
         st.markdown("##### Persone autorizzate ad accedere al terreno di gioco")
         def_dir = [pid for pid in sal_dir if pid in pers]
         sel_dir = st.multiselect("Allenatori e dirigenti", list(pers), default=def_dir,
-                                 format_func=lambda pid: pers[pid]["denominazione"], key=k + "dir", placeholder="Scrivi il nome per cercare o scegli",
-                                 help="Per una nuova distinta viene proposto lo staff dell'ultima distinta salvata.")
+                                 format_func=lambda pid: pers[pid]["denominazione"] + segno_disciplina(situazioni_dist.get(pid)), key=k + "dir",
+                                 placeholder="Scrivi il nome per cercare o scegli", help="Per una nuova distinta viene proposto lo staff dell'ultima distinta salvata.")
+        for pid in sel_dir:
+            if situazioni_dist.get(pid, ("",))[0] == "SQUALIFICATO":
+                st.warning(f"⛔ {pers[pid]['denominazione']}: {situazioni_dist[pid][1]}. Controlla sul comunicato prima di inserire il nome in distinta.")
         righe_dir = []
         if sel_dir:
             h = st.columns([3, 2, 1, 1.2, 2])
@@ -4507,8 +4524,9 @@ def correggi_spesa(df_sp, categorie):
                 st.error(f"Errore nell'eliminazione: {ex_d}")
 
 
-def situazione_disciplinare(ids, categoria):
-    """{anagrafica_id: (stato, testo)} per chi è squalificato o diffidato, dai comunicati importati."""
+def situazione_disciplinare(ids, categoria, quando=None):
+    """{anagrafica_id: (stato, testo)} per chi è squalificato o diffidato alla data `quando` (di solito quella della gara;
+    se manca, oggi), dai comunicati importati."""
     if not ids:
         return {}
     df = leggi_df(
@@ -4517,15 +4535,17 @@ def situazione_disciplinare(ids, categoria):
         "WHERE p.anagrafica_id IS NOT NULL AND p.tipo IN ('DIFFIDA', 'SQUALIFICA_SOMMA', 'SQUALIFICA_GIORNATE', 'SQUALIFICA_TEMPO')")
     if df.empty:
         return {}
-    ultimo = leggi_df("SELECT data, numero FROM comunicati_disciplina ORDER BY data DESC, numero DESC LIMIT 1").iloc[0]
-    oggi = datetime.date.today().isoformat()
-    date_partite = leggi_df("SELECT data FROM eventi_squadra WHERE tipo = 'PARTITA' AND (? IS NULL OR categoria = ?) AND data <= ?", [categoria, categoria, oggi])["data"].tolist()
+    quando = quando or datetime.date.today()
+    # le diffide di stagioni precedenti non contano più: vale la stagione sportiva (1/7-30/6), anche se la contabilità è su anno solare
+    inizio_stagione = str(stagione_sportiva(quando)[0])
+    df = df[(df["tipo"] != "DIFFIDA") | (df["data_comunicato"].astype(str) >= inizio_stagione)]
+    date_partite = leggi_df("SELECT data FROM eventi_squadra WHERE tipo = 'PARTITA' AND (? IS NULL OR categoria = ?)", [categoria, categoria])["data"].tolist()
     risultato = {}
     for aid, g in df.groupby("anagrafica_id"):
         if int(aid) not in ids:
             continue
-        stato, testo = disciplina.situazione(g.sort_values(["data_comunicato", "numero_comunicato"], ascending=False).to_dict("records"), oggi,
-                                             lambda d: sum(1 for x in date_partite if x > d), (ultimo["data"], int(ultimo["numero"])))
+        stato, testo = disciplina.situazione(g.sort_values(["data_comunicato", "numero_comunicato"], ascending=False).to_dict("records"),
+                                             quando, date_partite)
         if stato:
             risultato[int(aid)] = (stato, testo)
     return risultato
@@ -4707,6 +4727,11 @@ def scheda_disciplina(con_contabilita):
                 return
             gia = leggi_df("SELECT id FROM comunicati_disciplina WHERE numero = ? AND data = ?", [dati["numero"], dati["data"]])
             st.markdown(f"**Comunicato n. {dati['numero']} del {pd.to_datetime(dati['data']).strftime('%d/%m/%Y')}**")
+            somme = [p["nome"] for p in dati["provvedimenti"] if p["tipo"] == "SQUALIFICA_SOMMA"]
+            if somme and int(str(dati["data"])[5:7]) < 7:  # seconda metà della stagione sportiva, cioè dopo il 1° gennaio
+                st.warning(f"⚠️ Squalifica per somma di ammonizioni dopo il 1° gennaio: {', '.join(somme)}. Il programma conta diffide e ammonizioni "
+                           "sull'intera stagione sportiva (1/7-30/6), senza azzerarle a gennaio: controlla sul regolamento e sul comunicato "
+                           "che il conteggio corrisponda.")
             if not gia.empty:
                 st.info("Questo comunicato è già stato registrato: se lo registri di nuovo le voci vengono sostituite "
                         "(le ammende già registrate come debito restano e non vengono duplicate).")
@@ -4942,10 +4967,11 @@ def pagina_squadra():
             luogo_cv = k4.text_input("Campo", value=valore_pulito(cal.luogo) or "" if cal else "")
             rit_ora_cv = k5.text_input("Ora del ritrovo", placeholder="13:45")
             rit_luogo_cv = k6.text_input("Luogo del ritrovo")
+            situazioni_gara = situazione_disciplinare(set(nomi_sq), cat_sq, data_cv)  # alla data della partita
             def etichetta_conv(aid):
                 scad = gioc_cat.loc[gioc_cat["id"] == aid, "scad"].iloc[0]
                 valido = pd.notna(scad) and str(scad) >= str(data_cv)
-                return nomi_sq[aid] + ("" if valido else " ⛔ certificato non valido") + segno_disciplina(situazioni.get(int(aid)))
+                return nomi_sq[aid] + ("" if valido else " ⛔ certificato non valido") + segno_disciplina(situazioni_gara.get(int(aid)))
             conv_cv = st.multiselect("Convocati", list(nomi_sq), format_func=etichetta_conv, placeholder="Scrivi il nome per cercare o scegli i giocatori")
             note_cv = st.text_area("Note per i convocati (facoltative)", height=70, placeholder="es. portare la tuta di rappresentanza")
             if st.form_submit_button("💾 Salva la convocazione", type="primary"):
@@ -5055,7 +5081,7 @@ def pagina_squadra():
                         st.error(f"Errore nel salvataggio delle presenze: {ex_pr}")
 
     if scheda_squadra == schede_squadra[3]:
-        ini_sq, fin_sq, etich_sq = esercizio_corrente()
+        ini_sq, fin_sq, etich_sq = stagione_sportiva()
         df_pr = leggi_df(
             "SELECT p.anagrafica_id, a.denominazione AS nome, e.tipo, p.stato FROM presenze_evento p "
             "JOIN eventi_squadra e ON e.id = p.evento_id JOIN anagrafiche a ON a.id = p.anagrafica_id "
@@ -5071,7 +5097,7 @@ def pagina_squadra():
         df_disc = leggi_df(
             "SELECT p.anagrafica_id, p.tipo FROM provvedimenti_disciplinari p JOIN comunicati_disciplina c ON c.id = p.comunicato_id "
             "WHERE p.anagrafica_id IS NOT NULL AND c.data BETWEEN ? AND ?", [str(ini_sq), str(fin_sq)])
-        st.caption(f"Esercizio {etich_sq}: {int(n_all_sq)} allenamenti registrati. Reti, assist, minuti e cartellini vengono dal tabellino "
+        st.caption(f"Stagione sportiva {etich_sq} (1/7-30/6): {int(n_all_sq)} allenamenti registrati. Reti, assist, minuti e cartellini vengono dal tabellino "
                    "delle partite; le squalifiche dai comunicati importati.")
         st.dataframe(disciplina.statistiche(nomi_sq, df_pr, df_dist, df_tabs, df_disc), width="stretch", hide_index=True)
 

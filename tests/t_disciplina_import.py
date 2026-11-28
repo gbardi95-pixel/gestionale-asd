@@ -12,15 +12,22 @@ RIGHE += ["CLASSIFICA MARCATORI – GIRONE 1", "2 reti ROSSI MARIO ASD ROSSA", "
           "«  SQUALIFICHE DI 1 GIORNATE  »", "ASD ROSSA SCONOSCIUTO ZETA (ART. 222 R.T.N.)",
           "«  AMMENDE  »", "ASD ROSSA AMMENDA DI € 20,00 (ART. 214 R.T.N.)"]
 from reportlab.pdfgen import canvas
-buf = io.BytesIO()
-pdf = canvas.Canvas(buf)
-y = 800
-for riga in RIGHE:
-    pdf.drawString(40, y, riga)
-    y -= 16
-pdf.save()
+
 percorso = os.path.join(tempfile.gettempdir(), "comunicato_prova.pdf")
-open(percorso, "wb").write(buf.getvalue())
+
+
+def scrivi_pdf(righe):
+    buf = io.BytesIO()
+    pdf = canvas.Canvas(buf)
+    y = 800
+    for riga in righe:
+        pdf.drawString(40, y, riga)
+        y -= 16
+    pdf.save()
+    open(percorso, "wb").write(buf.getvalue())
+
+
+scrivi_pdf(RIGHE)
 
 f = prepara("t_disciplina_import")
 s = open(f, encoding="utf-8").read()
@@ -62,4 +69,19 @@ vai(at, "squadra_scheda", "Disciplina")
 campo(at.selectbox, "Il nome della tua società").set_value("ASD ROSSA").run()
 bottone(at, "💾 Registra nel programma").click().run()
 assert c.execute("SELECT COUNT(*) FROM provvedimenti_disciplinari").fetchone()[0] == 2
+
+# squalifica per somma di ammonizioni dopo il 1° gennaio: il programma avvisa di controllare il conteggio
+SOMMA = ["PROVVEDIMENTI DISCIPLINARI – GIRONE 1", "«  SQUALIFICHE PER SOMMA DI AMMONIZIONI  »", "ASD ROSSA VERDI PAOLO (ART. 222 R.T.N.)"]
+GIORNATE = ["PROVVEDIMENTI DISCIPLINARI – GIRONE 1", "«  SQUALIFICHE DI 1 GIORNATE  »", "ASD ROSSA VERDI PAOLO (ART. 222 R.T.N.)"]
+TESTA = RIGHE[1:RIGHE.index("CLASSIFICA MARCATORI – GIRONE 1")]
+for data_cu, blocco, atteso in (("13/01/2027", SOMMA, True), ("18/11/2026", SOMMA, False), ("20/01/2027", GIORNATE, False)):
+    scrivi_pdf([f"CU 14 del {data_cu}"] + TESTA + blocco)
+    at = nuovo(f, "pagina_squadra")
+    vai(at, "squadra_scheda", "Disciplina")
+    campo(at.selectbox, "Il nome della tua società").set_value("ASD ROSSA").run()
+    assert not at.exception, at.exception
+    assert [x for x in at.selectbox if x.key and x.key.startswith("disc_ab_")], "provvedimento non letto"
+    avvisi = [w.value for w in at.warning if "dopo il 1° gennaio" in w.value]
+    assert bool(avvisi) == atteso, (data_cu, blocco[1], [w.value for w in at.warning])
+    assert not atteso or "VERDI PAOLO" in avvisi[0], avvisi
 print("TUTTO OK")
